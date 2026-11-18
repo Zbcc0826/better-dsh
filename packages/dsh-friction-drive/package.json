@@ -1,0 +1,13 @@
+{
+  "name": "dsh-friction-drive",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "main": "index.js",
+  "files": ["index.js", "logic.js", "store.js", "schema.js", "owned-runtime.js", "cordis.patch.yml", "SKILL.md"],
+  "engines": { "dsh": ">=0.2.2-rc.3 <0.3.0" },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.3"
+  }
+}

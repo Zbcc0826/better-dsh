@@ -1,0 +1,8 @@
+.dsh-home/
+.dsh-deps/
+.dsh/
+lab/
+node_modules/
+packages/*/node_modules
+.deepseek-key
+.env

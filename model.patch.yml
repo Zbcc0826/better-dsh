@@ -1,0 +1,13 @@
+# 使用官方列表中的 DeepSeek-V4.1-Flash（模型 id：deepseek-flash），推理档位用接口默认的 high。
+- id: llm-deepseek
+  config:
+    reasoningEffort: high
+    apiKeyEnv: DEEPSEEK_API_KEY
+
+- id: agent-loop
+  config:
+    agents:
+      - id: main
+        provider: deepseek-official
+        model: deepseek-flash
+        cwd: !!js process.cwd()
