@@ -1,0 +1,6 @@
+# 一个组合包，两行都由插件页的总开关控制。
+- insert:
+    - id: friction-drive
+      name: dsh-friction-drive
+    - id: friction-demo
+      name: dsh-friction-drive/demo

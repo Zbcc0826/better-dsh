@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Friction drive",
+    "description": "When a tool keeps getting in the way, the agent proposes a change and applies it in this session only after you allow it. This can spend extra tokens."
+  }
+}

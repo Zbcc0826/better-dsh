@@ -1,0 +1,31 @@
+{
+  "name": "dsh-friction-drive",
+  "version": "0.1.0",
+  "description": "工具用得不顺时，由 Agent 提出改法，你同意后才改当前会话里的工具。",
+  "type": "module",
+  "private": true,
+  "icon": "./icon.svg",
+  "main": "./packages/dsh-friction-drive/index.js",
+  "exports": {
+    ".": "./packages/dsh-friction-drive/index.js",
+    "./demo": "./packages/dsh-friction-demo/index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "cordis.patch.yml",
+    "icon.svg",
+    "locale",
+    "packages/dsh-friction-drive",
+    "packages/dsh-friction-demo",
+    "install.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": { "dsh": ">=0.2.2-rc.3 <0.3.0" },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.3"
+  }
+}

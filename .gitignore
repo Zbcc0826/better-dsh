@@ -2,6 +2,7 @@
 .dsh-deps/
 .dsh/
 lab/
+node_modules
 node_modules/
 packages/*/node_modules
 .deepseek-key

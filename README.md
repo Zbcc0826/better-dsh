@@ -8,21 +8,27 @@
 
 - DeepSeek Harness `0.2.2-rc.3` 或更高，且低于 `0.3.0`
 - 已能启动 `dsh` 或桌面应用
-- 不需要 pnpm。命令行拒绝管理名为 `desktop` 的 profile，安装脚本改的是 `$DSH_HOME/cordis.patch.yml`
+- 桌面应用自带安装插件用的 pnpm，不必再装一个
 
 ## 安装
 
+打开 **插件**，点 **添加插件** 旁边的箭头，选择 **安装第三方插件**。本地克隆填这个仓库的绝对路径；从 GitHub 安装则填：
+
+```text
+github:Zbcc0826/dsh-friction-drive
+```
+
+安装结束后选择 **立即启用**。卡片出现在 **实验性插件** 下面的 **已安装插件**，标题是「摩擦驱动」，右侧是开关。关掉开关会卸下这一层，不再加载。
+
+也可以在仓库目录运行：
+
 ```sh
-git clone <这个仓库>
-cd <仓库目录>
 node install.mjs
 ```
 
-默认写入 `~/.dsh`，也就是桌面应用平时使用的目录。如果你用单独的 `DSH_HOME`，先导出它再运行脚本。脚本会把**本机仓库路径**写进该目录，并去掉各个 profile 里重复的安装，避免工具登记两次。桌面应用从仓库外的文件加载插件时，不会沿用应用自己的依赖目录，所以脚本还会用 npm 把 `@deepseek-ai/dsh-tools` 装进仓库下的 `.dsh-deps`，并链接为 `node_modules`。这一步需要能访问 npm。`.dsh-deps` 和 `node_modules` 不要提交。
+脚本装进 `DSH_HOME`（默认 `~/.dsh`）里已有的各个 profile，并打开开关。桌面端的 profile 不能用 `dsh plugin --profile desktop`，所以脚本直接改那个目录。装完后重启正在运行的桌面应用。用本地路径安装时，脚本还会把 `@deepseek-ai/dsh-tools` 放进 `.dsh-deps`，因为链接到仓库外的目录时，桌面应用不会改用自己包里的那一份。`.dsh-deps` 和 `node_modules` 不要提交。
 
-改完后重启正在运行的桌面应用。
-
-卸掉时，删除 `$DSH_HOME/cordis.patch.yml` 里 `friction-drive` 和 `friction-demo` 两条。
+卸掉时在这张卡片上关闭开关，再卸载。不要把绝对路径写进 `$DSH_HOME/cordis.patch.yml`，那种插法不会出现在插件页，开关也关不掉。
 
 ## 会得到什么
 
