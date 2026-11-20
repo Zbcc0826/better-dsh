@@ -15,7 +15,7 @@ These are two local plugins and are not published to npm. Clone the repo and run
 Open **Plugins**, click the arrow next to **Add plugin**, and choose **Install a third-party plugin**. For a local clone, enter this repo's absolute path. From GitHub, enter:
 
 ```text
-github:Zbcc0826/dsh-friction-drive
+github:Zbcc0826/better-dsh
 ```
 
 Choose **Enable now** when installation finishes. The card appears under **Installed** in **Experimental**, titled Experience Compiler, with a switch on the right. Turning the switch off unloads the `dsh-friction-drive` bundle.
@@ -37,6 +37,8 @@ After installation, tools used in the current session are recorded. When a tool 
 When the same sequence succeeds repeatedly, the plugin puts the longest non-overlapping fragments in `friction_status.compilable`. The model may call `propose_compiled_procedure`. Nothing runs the original tool or a script before approval. After you allow it, this session gains an `ec_` tool. A later direct call is redirected only when the first step's tool name and constants match. Slots are checked only against the two validated bindings. A session with no approval UI does not install the tool.
 
 The sample tools `ledger_lookup`, `fx_convert`, and `window_overlap` still change through their registered fields and keep their original names. A CLI session without an approval UI does not change tools on its own.
+
+A complex task can ask to use a critique-then-implement loop. A simple lookup does not enter it. After approval, defects are recorded first, then each change records its secondary effects. Work starts only after `friction_status.quality.ready` is true. This loop does not replace the approvals above.
 
 ## Keys
 

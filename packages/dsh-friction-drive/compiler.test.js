@@ -866,7 +866,7 @@ test('仓库外必须加载插件入口，依赖解析失败就是失败', () =>
   const dir = mkdtempSync(path.join(tmpdir(), 'ec-load-'))
   const packageDir = path.join(dir, 'pkg')
   mkdirSync(packageDir, { recursive: true })
-  for (const name of ['index.js', 'logic.js', 'compiler.js', 'store.js', 'schema.js', 'owned-runtime.js']) {
+  for (const name of ['index.js', 'logic.js', 'compiler.js', 'quality.js', 'store.js', 'schema.js', 'owned-runtime.js']) {
     cpSync(path.join(here, name), path.join(packageDir, name))
   }
   const root = path.resolve(here, '../..')

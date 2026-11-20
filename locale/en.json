@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Experience Compiler",
-    "description": "Behavior comes from the agent's own experience. Replacement tools and compiled procedures ask before they run. This can spend extra tokens."
+    "description": "Behavior comes from the agent's own experience. Replacement tools, compiled procedures, and the optional critique-then-implement loop for complex tasks all ask before they run. This can spend extra tokens."
   }
 }

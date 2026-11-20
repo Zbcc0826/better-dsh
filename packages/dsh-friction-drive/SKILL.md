@@ -1,6 +1,6 @@
 ---
 name: friction-drive
-description: 某个正在使用的工具过线后必须使用。已登记工具改它自己的字段。其他工具改为新增或修改本插件的工具，并查看 friction_status 的 notes。反复成功的片段见 compilable，调用 propose_compiled_procedure 前先看候选 asset_id。
+description: 某个正在使用的工具过线后必须使用。已登记工具改它自己的字段。其他工具改为新增或修改本插件的工具，并查看 friction_status 的 notes。反复成功的片段见 compilable，调用 propose_compiled_procedure 前先看候选 asset_id。复杂任务先看 friction_status.quality，未同意不要开始找茬流程。
 ---
 
 # 经验编译
@@ -39,3 +39,7 @@ description: 某个正在使用的工具过线后必须使用。已登记工具�
 审批卡会按步列出全部脚本和覆盖值。同意是给当前会话安装 `ec_` 工具，不是放行这一次调用。之后第一步在常量匹配时会被拒绝并改走 `ec_`。槽位只在被校验的两次绑定上有参照。没有审批界面时不要重试安装。
 
 `ec_` 遇到 `agent` 步会停下并返回 `resume_token`。做完该步后，用同一个 `ec_` 工具提交 `resume_token` 和 `step_output`，才会执行后面的程序步。某一步失败时，只重提那一步的 `run`、`pre` 或 `post`，并带上 `revise_step`。不要用 `propose_tool_goal` 整份替换 `ec_`。失败步在新验收通过前仍是 `agent`。已登记示例工具继续用原名。
+
+复杂任务才使用找茬再实现。复杂指会改行为、跨过记分、审批、会话隔离或已同意的工具，或者用户明确要求找茬、实现对抗。一次查询、改一句文案、只读查看，不要提议。
+
+先调用 `propose_quality_loop`，写清任务和为什么复杂。用户没同意就按普通方式做，不要自己写两轮。同意后先 `record_quality_critique`，至少两条，每条有场景和后果。再 `record_quality_plan`：每条修改都要写次生影响，并盖住全部问题。`friction_status.quality.ready` 还是 false 时，不要改代码，也不要改工具。这个流程不代替工具改造或程序沉淀的审批。方案就绪后只改方案里写过的点。

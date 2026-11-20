@@ -9,11 +9,12 @@ import { fileURLToPath } from 'node:url'
 import { allocateCompiledName, assessCompiledProposal, commitCompiled, compilableView, executeCompiled, ingestCall, installCompiled, interceptMatches, markStepAgent, matureFragments, noteRegisteredBreakpoint, stageCompiledRestore, stageCompiledRevision, visibleCompiled } from './compiler.js'
 import { admit, applyAdaptation, approvalCopy, canonicalPatch, clearGate, failureOf, freshTool, gateSkipped, invalidAgainstSchema, ownedCopy, ownedCore, ownedName, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, truncationOf } from './logic.js'
 import { fillTemplate, presentDelegated } from './owned-runtime.js'
+import { assessCritique, assessLoopOffer, assessPlan, qualityCopy, qualityView } from './quality.js'
 import { schemaError } from './schema.js'
 import { readSession, sessionDir, stateRoot, withSession } from './store.js'
 
 const ROOT = stateRoot
-const OWN = new Set(['friction_status', 'propose_tool_goal', 'apply_tool_change', 'restore_tool_definition', 'propose_compiled_procedure'])
+const OWN = new Set(['friction_status', 'propose_tool_goal', 'apply_tool_change', 'restore_tool_definition', 'propose_compiled_procedure', 'propose_quality_loop', 'record_quality_critique', 'record_quality_plan'])
 
 export const name = 'friction-drive'
 export const inject = ['tools']
@@ -114,6 +115,7 @@ export function apply(ctx) {
         owned: Object.keys(catalog.owned ?? {}),
         notes: renderNotes(catalog.owned ?? {}),
         compilable: compilableView(matureFragments(state.trace ?? [], fragmentGuards(state))),
+        quality: qualityView(catalog.quality),
         compiled: Object.values(catalog.compiled ?? {}).map((spec) => ({
           name: spec.ecName,
           tools: spec.tools,
@@ -125,6 +127,101 @@ export function apply(ctx) {
           })),
         })),
       })))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'propose_quality_loop',
+    description: '复杂任务可选。征求同意后，本会话先找茬再写实现方案。简单任务不要调用。不同意就按普通方式做。',
+    parameters: {
+      task: { type: 'string', required: true, description: '要做的复杂任务，一两句话。' },
+      why: { type: 'string', required: true, description: '为什么它会牵动多处行为，而不是一次查询。' },
+    },
+    output: textOutput(),
+    async execute(args, exec) {
+      const sessionId = drive.sessionOf(exec)
+      if (!sessionId) return JSON.stringify({ ok: false, code: 'SESSION_REQUIRED' })
+      const offer = assessLoopOffer(args)
+      if (!offer.ok) return JSON.stringify(offer)
+      const current = readSession(ROOT(), sessionId, drive.threshold).catalog.quality
+      if (current?.active && !qualityView(current).ready) return JSON.stringify({ ok: false, code: 'IN_PROGRESS' })
+      const copy = qualityCopy(offer.task)
+      const outcome = await askApproval(ctx, exec, 'propose_quality_loop', copy.zh, copy)
+      if (outcome !== 'allowed-once') return JSON.stringify({ ok: false, code: 'NOT_APPROVED', outcome })
+      // 新的同意清掉上一轮找茬和方案，避免旧计划被拿去实现新任务。
+      const saved = withSession(ROOT(), sessionId, drive.threshold, ({ catalog }) => {
+        catalog.quality = { active: true, task: offer.task, why: offer.why, critique: null, plan: null }
+        return qualityView(catalog.quality)
+      })
+      return JSON.stringify({
+        ok: true,
+        ...saved,
+        instruction: '先调用 record_quality_critique。计划还没就绪时不要改代码、不要改工具。',
+      })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'record_quality_critique',
+    description: '记下本会话找茬结果。至少两条。写完之前不要实现。',
+    parameters: {
+      defects_json: { type: 'string', required: true, description: '数组。每项含 id、severity、scenario、consequence。severity 只能是 fatal、high 或 medium。' },
+    },
+    output: textOutput(),
+    async execute(args, exec) {
+      const sessionId = drive.sessionOf(exec)
+      if (!sessionId) return JSON.stringify({ ok: false, code: 'SESSION_REQUIRED' })
+      const loop = readSession(ROOT(), sessionId, drive.threshold).catalog.quality
+      if (!loop?.active) return JSON.stringify({ ok: false, code: 'NOT_ACTIVE' })
+      let defects
+      try {
+        defects = JSON.parse(args.defects_json)
+      } catch {
+        return JSON.stringify({ ok: false, code: 'BAD_DEFECTS' })
+      }
+      const critique = assessCritique(defects)
+      if (!critique.ok) return JSON.stringify(critique)
+      const saved = withSession(ROOT(), sessionId, drive.threshold, ({ catalog }) => {
+        catalog.quality = { ...catalog.quality, critique, plan: null }
+        return qualityView(catalog.quality)
+      })
+      return JSON.stringify({
+        ok: true,
+        ...saved,
+        instruction: '再调用 record_quality_plan。每条修改都要写次生影响。这时还不要实现。',
+      })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'record_quality_plan',
+    description: '按找茬逐条写实现方案。每条必须有次生影响。全部盖住之后，本会话才可以动手。',
+    parameters: {
+      plan_json: { type: 'string', required: true, description: '含 principle 和 changes。changes 每项含 defectId、change、secondary 数组。' },
+    },
+    output: textOutput(),
+    async execute(args, exec) {
+      const sessionId = drive.sessionOf(exec)
+      if (!sessionId) return JSON.stringify({ ok: false, code: 'SESSION_REQUIRED' })
+      const loop = readSession(ROOT(), sessionId, drive.threshold).catalog.quality
+      if (!loop?.active) return JSON.stringify({ ok: false, code: 'NOT_ACTIVE' })
+      let plan
+      try {
+        plan = JSON.parse(args.plan_json)
+      } catch {
+        return JSON.stringify({ ok: false, code: 'BAD_PRINCIPLE' })
+      }
+      const checked = assessPlan(loop.critique?.defects, plan)
+      if (!checked.ok) return JSON.stringify(checked)
+      const saved = withSession(ROOT(), sessionId, drive.threshold, ({ catalog }) => {
+        catalog.quality = { ...catalog.quality, plan: checked.plan }
+        return qualityView(catalog.quality)
+      })
+      return JSON.stringify({
+        ok: true,
+        ...saved,
+        instruction: '可以按方案实现。只改方案里写过的点，并留意每条 secondary。这不代替工具改造或程序沉淀的审批。',
+      })
     },
   }))
 
