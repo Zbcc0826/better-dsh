@@ -1,4 +1,4 @@
-# Experience Compiler
+# Better DSH
 
 Behavior comes from the agent's own experience using tools. Replacement tools and compiled procedures ask for approval before they run. This can spend extra tokens.
 
@@ -18,7 +18,7 @@ Open **Plugins**, click the arrow next to **Add plugin**, and choose **Install a
 github:Zbcc0826/better-dsh
 ```
 
-Choose **Enable now** when installation finishes. The card appears under **Installed** in **Experimental**, titled Experience Compiler, with a switch on the right. Turning the switch off unloads the `dsh-friction-drive` bundle.
+Choose **Enable now** when installation finishes. The card appears under **Installed** in **Experimental**, titled Better DSH, with a switch on the right. Turning the switch off unloads the `dsh-friction-drive` bundle.
 
 You can also run this in the repo:
 

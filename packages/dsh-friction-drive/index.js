@@ -478,7 +478,7 @@ function watchTools(ctx, drive) {
     }
     const intercepted = (gate.intercepts ?? []).find((item) => interceptMatches(item, exec.name, exec.arguments))
     if (intercepted) {
-      return { kind: 'deny', reason: `${exec.name} 在这个会话里请改用 ${intercepted.ecName}，并查看 friction_status。这是已安装的经验编译工具，不是放行这一次调用。` }
+      return { kind: 'deny', reason: `${exec.name} 在这个会话里请改用 ${intercepted.ecName}，并查看 friction_status。这是已安装的更好的 DSH 工具，不是放行这一次调用。` }
     }
     if (drive.started.size > 0) {
       drive.parallel.add(exec.callId)
@@ -948,7 +948,7 @@ function compiledParameters(spec) {
 function compiledDefinition(ctx, drive, spec) {
   return {
     name: spec.name,
-    description: `经验编译：${(spec.tools ?? []).join(' → ')}`.slice(0, 180),
+    description: `更好的 DSH：${(spec.tools ?? []).join(' → ')}`.slice(0, 180),
     parameters: compiledParameters(spec),
     output: {
       schema: {

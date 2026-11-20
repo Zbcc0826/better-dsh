@@ -1,6 +1,20 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { assessCritique, assessLoopOffer, assessPlan, qualityView } from './quality.js'
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+
+test('卡片中英文名与仓库一致，包名不变', () => {
+  const zh = JSON.parse(readFileSync(path.join(root, 'locale/zh.json'), 'utf8'))
+  const en = JSON.parse(readFileSync(path.join(root, 'locale/en.json'), 'utf8'))
+  const manifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
+  assert.equal(zh.meta.title, '更好的 DSH')
+  assert.equal(en.meta.title, 'Better DSH')
+  assert.equal(manifest.name, 'dsh-friction-drive')
+})
 
 const defects = [
   { id: 'd1', severity: 'fatal', scenario: '同意前就改了两个文件', consequence: '用户拒绝时改动已经留下' },

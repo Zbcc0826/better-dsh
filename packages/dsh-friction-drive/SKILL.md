@@ -3,7 +3,7 @@ name: friction-drive
 description: 某个正在使用的工具过线后必须使用。已登记工具改它自己的字段。其他工具改为新增或修改本插件的工具，并查看 friction_status 的 notes。反复成功的片段见 compilable，调用 propose_compiled_procedure 前先看候选 asset_id。复杂任务先看 friction_status.quality，未同意不要开始找茬流程。
 ---
 
-# 经验编译
+# 更好的 DSH
 
 只处理已经过线的那一个工具。其他工具继续用。
 
