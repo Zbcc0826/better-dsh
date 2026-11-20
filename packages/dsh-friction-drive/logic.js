@@ -18,13 +18,17 @@ export function freshTool() {
     score: 0,
     gated: false,
     lastArgs: '',
+    lastOk: null,
     lastOutputChars: 0,
     workloadItems: null,
   }
 }
 
 /**
- * 给一次调用算分。verbose 只在失败或重试时叠加。
+ * 给一次调用算分。成功且未截断、未慢超时的同参重复不加分。
+ * retry 只加在上一次失败、而且这一次仍失败的同参调用上。
+ * 正文退出码把 lastOk 打成失败之后，下一次成功的同参调用不加 retry。
+ * verbose 只在失败或这种重试时叠加。
  * @param {object} tool 该工具已有计数
  * @param {object} event 本次调用事实
  */
@@ -33,7 +37,8 @@ export function scoreCall(tool, event, options = {}) {
   const verboseChars = options.verboseChars ?? 500
   const reasons = []
   const args = event.args ?? ''
-  const retry = tool.lastArgs !== '' && tool.lastArgs === args
+  const sameArgs = tool.lastArgs !== '' && tool.lastArgs === args
+  const retry = sameArgs && tool.lastOk === false && event.ok === false
   if (event.ok === false) reasons.push('failure')
   if (retry) reasons.push('retry')
   if ((event.elapsedMs ?? 0) > slowMs) reasons.push('slow')
@@ -58,6 +63,7 @@ export function noteCall(state, event, options = {}) {
   if (event.truncated) tool.partials += 1
   tool.score += scored.points
   tool.lastArgs = event.args ?? ''
+  tool.lastOk = event.ok === false ? false : true
   tool.lastOutputChars = event.outputChars ?? 0
   if (Number.isInteger(event.workloadItems) && event.workloadItems >= 1) tool.workloadItems = event.workloadItems
   const crossed = tool.score >= state.threshold && scored.points > 0
@@ -301,13 +307,18 @@ export function applyAdaptation(patch, args) {
   return { ...(patch.defaults ?? {}), ...(args ?? {}), ...(patch.overrides ?? {}) }
 }
 
-/** 工具是否真的失败。只看错误对象，不看正文，避免文件内容里的字样被当成参数错误。 */
+/**
+ * 工具是否真的失败。
+ * invalid arguments 仍不计成失败。数值退出码是 0 时，正文里的非零退出码也算失败。
+ */
 export function failureOf(result) {
   const message = result?.error?.message ?? ''
   if (message.includes('invalid arguments')) return { ok: true, invalid: true }
   if (result?.isError === true || result?.value?.failed === true) return { ok: false, invalid: false }
   const code = result?.value?.exitCode
   if (typeof code === 'number' && code !== 0) return { ok: false, invalid: false }
+  const text = (result?.content ?? []).map((block) => block?.text ?? '').join('\n')
+  if (commandFailed(text)) return { ok: false, invalid: false }
   return { ok: true, invalid: false }
 }
 
@@ -320,7 +331,8 @@ export function truncationOf(result) {
   return Boolean(found && Number(found[1]) < Number(found[2]))
 }
 
-const OWNED_NAME = /^[a-z][a-z0-9_]{1,40}$/
+/** 本插件注册到进程里的工具名。总长 2 到 41，只能是小写、数字和下划线。 */
+export const OWNED_NAME = /^[a-z][a-z0-9_]{1,40}$/
 
 /** 全局工具名。前缀 fd 加原工具缩写和时间，避免会话之间撞名。 */
 export function ownedName(tool, now = Date.now(), serial = 0) {

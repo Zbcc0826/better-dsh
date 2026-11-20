@@ -20,11 +20,19 @@ const ledgerEntry = {
 }
 const ledgerSpec = { engine: 'ledger_paged', pageSize: 1, warmupError: true, format: 'verbose' }
 
-test('长输出本身不加分，失败或重试才计 verbose', () => {
+test('成功的同参重复不加分，失败后的同参重试仍计 verbose', () => {
   const state = freshState(8)
   const first = noteCall(state, { tool: 'search', ok: true, args: 'a', outputChars: 5000, elapsedMs: 10 })
   assert.equal(first.points, 0)
-  const retry = noteCall(state, { tool: 'search', ok: true, args: 'a', outputChars: 5000, elapsedMs: 10 })
+  const again = noteCall(state, { tool: 'search', ok: true, args: 'a', outputChars: 5000, elapsedMs: 10 })
+  assert.equal(again.points, 0)
+  assert.equal(again.reasons.includes('retry'), false)
+  assert.equal(again.reasons.includes('verbose'), false)
+  assert.equal(state.tools.search.score, 0)
+  assert.equal(state.tools.search.gated, false)
+  noteCall(state, { tool: 'search', ok: false, args: 'b', outputChars: 5000, elapsedMs: 10 })
+  const retry = noteCall(state, { tool: 'search', ok: false, args: 'b', outputChars: 5000, elapsedMs: 10 })
+  assert.ok(retry.reasons.includes('failure'))
   assert.ok(retry.reasons.includes('retry'))
   assert.ok(retry.reasons.includes('verbose'))
 })
@@ -110,8 +118,9 @@ test('两个会话的分数和工具定义互不影响', () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-test('失败只认结果标记，正文里的退出码和参数错误都不算', () => {
-  assert.equal(failureOf({ isError: false, content: [{ text: 'log [exit code: 1]' }], value: { exitCode: 0 } }).ok, true)
+test('正文里的非零退出码算失败，参数错误仍不计成失败', () => {
+  assert.equal(failureOf({ isError: false, content: [{ text: 'log [exit code: 1]' }], value: { exitCode: 0 } }).ok, false)
+  assert.equal(failureOf({ isError: false, content: [{ text: 'ok\n[exit code: 0]' }], value: { exitCode: 0 } }).ok, true)
   assert.equal(failureOf({ isError: false, value: { exitCode: 2 } }).ok, false)
   assert.equal(failureOf({ isError: true, error: { message: 'invalid arguments: missing required property "description"' } }).invalid, true)
   assert.equal(failureOf({ isError: true, error: { message: 'rg failed' }, content: [{ text: 'invalid arguments in file' }] }).ok, false)

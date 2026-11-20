@@ -104,6 +104,7 @@ function register(ctx, toolName, description, parameters, run) {
       const outcome = run(ctx, args, sessionId)
       const recorded = ctx.friction.record(sessionId, {
         tool: toolName,
+        callId: exec?.callId,
         ok: outcome.ok !== false,
         args: JSON.stringify(args ?? {}),
         outputChars: JSON.stringify(outcome).length,

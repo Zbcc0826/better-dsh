@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Friction drive",
-    "description": "When a tool keeps getting in the way, the agent proposes a change and applies it in this session only after you allow it. This can spend extra tokens."
+    "title": "Experience Compiler",
+    "description": "Behavior comes from the agent's own experience. Replacement tools and compiled procedures ask before they run. This can spend extra tokens."
   }
 }

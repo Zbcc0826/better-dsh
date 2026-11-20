@@ -1,9 +1,9 @@
 ---
 name: friction-drive
-description: 某个正在使用的工具过线后必须使用。已登记工具改它自己的字段。其他工具改为新增或修改本插件的工具，并查看 friction_status 的 notes。
+description: 某个正在使用的工具过线后必须使用。已登记工具改它自己的字段。其他工具改为新增或修改本插件的工具，并查看 friction_status 的 notes。反复成功的片段见 compilable，调用 propose_compiled_procedure 前先看候选 asset_id。
 ---
 
-# 摩擦驱动的工具改造
+# 经验编译
 
 只处理已经过线的那一个工具。其他工具继续用。
 
@@ -24,3 +24,18 @@ description: 某个正在使用的工具过线后必须使用。已登记工具�
 调用次数、截断和慢调用只在结果值里有对应标记时才计入。参数校验失败不计分。审批卡不引用模型的概述。不要请用户回复「已授权」。
 
 同意只改变当前会话。要恢复，调用 `restore_tool_definition`。没有更早的版本时，新工具会卸掉，原工具重新可以调用。
+
+同一段外部工具连续成功时，读取 `friction_status.compilable`。那里只有互不重叠的最长片段。调用 `propose_compiled_procedure`，`contract_json` 写：
+
+- `operations`：每步有 `id`、`tool`、`mode`（`program` 或 `agent`）、`pre`、`post`、`run`
+- `order`：与观察到的工具顺序一致
+- `edges`：上一步输出若出现在下一步参数里，必须写上 `{ "from", "to", "path" }`
+- `slots`：槽位名、路径和类型，必须来自观察到的变化参数
+- `constants`：必须等于观察到的常量，对象键顺序不影响相等
+- `run`：观察到的工具是 `bash` 时写 `{ "kind": "script", "command": "观察到的命令，槽位写成 {{名}}" }`。其他工具只能 `{ "kind": "delegate", "tool": "原工具名", "overrides": {} }`，覆盖值等于观察到的常量
+
+零个已有资产时不要传 `asset_id`。恰好一个时，`asset_id` 必须等于那一个。多个候选时，先看返回里的 `asset_id`，再点名其中一个；不要自己挑脚本。停用的旧版不能当候选。
+
+审批卡会按步列出全部脚本和覆盖值。同意是给当前会话安装 `ec_` 工具，不是放行这一次调用。之后第一步在常量匹配时会被拒绝并改走 `ec_`。槽位只在被校验的两次绑定上有参照。没有审批界面时不要重试安装。
+
+`ec_` 遇到 `agent` 步会停下并返回 `resume_token`。做完该步后，用同一个 `ec_` 工具提交 `resume_token` 和 `step_output`，才会执行后面的程序步。某一步失败时，只重提那一步的 `run`、`pre` 或 `post`，并带上 `revise_step`。不要用 `propose_tool_goal` 整份替换 `ec_`。失败步在新验收通过前仍是 `agent`。已登记示例工具继续用原名。

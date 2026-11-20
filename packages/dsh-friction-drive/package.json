@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "main": "index.js",
-  "files": ["index.js", "logic.js", "store.js", "schema.js", "owned-runtime.js", "cordis.patch.yml", "SKILL.md"],
+  "files": ["index.js", "logic.js", "compiler.js", "store.js", "schema.js", "owned-runtime.js", "cordis.patch.yml", "SKILL.md"],
   "engines": { "dsh": ">=0.2.2-rc.3 <0.3.0" },
   "peerDependencies": {
     "@deepseek-ai/dsh-tools": "0.2.2-rc.3"
