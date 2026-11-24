@@ -1,3 +1,9 @@
+# Better DSH
+
+DeepSeek Harness plugin for human-approved runtime tool repair and self-improvement.
+
+When a tool fails, retries the same arguments, or keeps returning a truncated result, the next direct call waits for approval. After you allow it, the plugin can add a session-local replacement tool or a compiled procedure. The original tool definition stays unchanged. Full English guide: [README.en.md](README.en.md).
+
 # 更好的 DSH
 
 行为来自 Agent 自己的使用体验。替代工具或沉淀程序在执行前征求同意。可能增加 token 消耗。
