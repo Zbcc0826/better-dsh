@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, clearGate, failureOf, freshState, gateSkipped, installOwnedRecord, noteCall, normalizeOwnedPatch, notesDescription, ownedCopy, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, semanticOwnedName, truncationOf } from './logic.js'
+import { fillTemplate } from './owned-runtime.js'
 import { schemaError } from './schema.js'
 import { readSession, sessionDir, withSession } from './store.js'
 
@@ -288,6 +289,7 @@ test('没过线直接造工具会被拒绝，用户确认后才记录提案', ()
   assert.equal(state.proposals.bash, undefined)
   assert.equal(catalog.owned.plugin_check.voluntary, true)
   assert.match(renderNotes(catalog.owned), /仍可调用/)
+  assert.match(renderNotes(catalog.owned), /voluntary/)
   assert.match(ownedCopy(created.proposal).zh, /主动提案/)
   const card = belowThresholdCopy('bash', 'plugin_check', spec.problem)
   assert.equal(card.zh.includes('\n'), false)
@@ -317,6 +319,22 @@ test('没过线直接造工具会被拒绝，用户确认后才记录提案', ()
   assert.equal(early.ok, true)
   assert.equal(early.proposal.voluntary, true)
   assert.match(approvalCopy(early.proposal, undefined).zh, /主动提案/)
+})
+
+test('插值自带 shell 引号，模板再包一层也不会叠成字面引号', () => {
+  const plain = fillTemplate('node --check ${dir}', { dir: '/tmp/plugin' })
+  assert.equal(plain.command, "node --check '/tmp/plugin'")
+  const doubled = fillTemplate('node --check "${dir}"', { dir: '/tmp/plugin' })
+  assert.equal(doubled.command, "node --check '/tmp/plugin'")
+  const singled = fillTemplate("node --check '${dir}'", { dir: '/tmp/plugin' })
+  assert.equal(singled.command, "node --check '/tmp/plugin'")
+  const mustache = fillTemplate('rg {{query}} src', { query: "a'b" })
+  assert.equal(mustache.command, "rg 'a'\\''b' src")
+  const partial = fillTemplate('echo "x ${dir}"', { dir: '/tmp/plugin' })
+  assert.equal(partial.command, "echo \"x '/tmp/plugin'\"")
+  const missing = fillTemplate('node --check ${dir}', {})
+  assert.equal(missing.ok, false)
+  assert.deepEqual(missing.missing, ['dir'])
 })
 
 test('读取会话不创建目录', () => {

@@ -7,19 +7,28 @@ export function shellQuote(value) {
   return `'${String(text).replace(/'/g, `'\\''`)}'`
 }
 
-/** 把 {{参数}} 或 ${参数} 换成引号包住的值。缺参数时不拼接命令。 */
+const MUSTACHE = String.raw`\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}`
+const DOLLAR = String.raw`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`
+
+/**
+ * 把 {{参数}} 或 ${参数} 换成 shell 单引号包住的值。缺参数时不拼接命令。
+ * 占位符两侧如果只有一层成对引号，先吃掉再放入。这样 "${dir}" 不会变成 "'/path'"。
+ */
 export function fillTemplate(command, args) {
   const missing = []
-  const replace = (_all, key) => {
+  const quoted = (key) => {
     if (!Object.prototype.hasOwnProperty.call(args ?? {}, key)) {
       missing.push(key)
       return ''
     }
     return shellQuote(args[key])
   }
-  const filled = String(command)
-    .replace(/\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}/g, replace)
-    .replace(/\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g, replace)
+  const fromGroups = (_all, mustache, dollar) => quoted(mustache || dollar)
+  let filled = String(command).replace(
+    new RegExp(`(['"])(?:${MUSTACHE}|${DOLLAR})\\1`, 'g'),
+    (_all, _quote, mustache, dollar) => quoted(mustache || dollar),
+  )
+  filled = filled.replace(new RegExp(`${MUSTACHE}|${DOLLAR}`, 'g'), fromGroups)
   if (missing.length > 0) return { ok: false, missing }
   return { ok: true, command: filled }
 }

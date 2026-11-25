@@ -1,12 +1,12 @@
 # Better DSH
 
-DeepSeek Harness plugin for human-approved runtime tool repair and self-improvement.
+DeepSeek Harness plugin for human-approved runtime tool repair and self-improvement. Shaped by real feedback from DeepSeek models running in DSH.
 
 When a tool fails, retries the same arguments, or keeps returning a truncated result, the next direct call waits for approval. After you allow it, the plugin can add a session-local replacement tool or a compiled procedure. The original tool definition stays unchanged. Full English guide: [README.en.md](README.en.md).
 
 # 更好的 DSH
 
-行为来自 Agent 自己的使用体验。替代工具或沉淀程序在执行前征求同意。可能增加 token 消耗。
+行为来自 Agent 自己的使用体验，并按 DeepSeek 模型在 DSH 中运行时的真实反馈继续改。替代工具或沉淀程序在执行前征求同意。可能增加 token 消耗。
 
 这是两个本地插件，不需要发布到 npm。克隆后在你自己的机器上运行安装脚本即可。桌面应用和命令行共用一份配置。包名仍是 `dsh-friction-drive`。
 
@@ -38,7 +38,7 @@ node install.mjs
 
 ## 会得到什么
 
-装上之后，当前会话里正在使用的工具都会被记账。某个工具失败、同参数重试，或结果值带有截断标记，分数过线后，下一次直接调用会被拦住。没过线时不能直接造替代工具。你如果明确要求新工具，会先看到一张确认；不允许就什么都不会记下。允许之后还要再同意一次才会装上，原工具仍然可以调用。只有摩擦过线并同意替代时，这个会话才会改走新工具。名字可以保留提案里的语义，例如 `plugin_check`。命令里的 `${dir}` 会换成调用参数，参数 JSON 也会写到环境变量 `FD_ARGS` 指向的文件。`friction_status` 的 `notes` 会写上原工具的问题、新工具的用法和 schema。原工具的定义不动。这个新工具之后还可以再改，改的是它自己的 schema、执行方式和说明。
+装上之后，当前会话里正在使用的工具都会被记账。某个工具失败、同参数重试，或结果值带有截断标记，分数过线后，下一次直接调用会被拦住。没过线时不能直接造替代工具。你如果明确要求新工具，会先看到一张确认；不允许就什么都不会记下。允许之后还要再同意一次才会装上，原工具仍然可以调用。只有摩擦过线并同意替代时，这个会话才会改走新工具。名字可以保留提案里的语义，例如 `plugin_check`。命令写成 `node --check ${dir}`。`${dir}` 会换成带 shell 单引号的参数，模板不要再加引号。参数 JSON 写到环境变量 `FD_ARGS` 指向的文件。`friction_status` 的 `notes` 会写上原工具的问题、新工具的用法和 schema，并标明这是用户主动要求（voluntary）还是摩擦过线（friction）。原工具的定义不动。这个新工具之后还可以再改，改的是它自己的 schema、执行方式和说明。
 
 同一段调用反复成功时，插件会把互不重叠的最长片段放进 `friction_status.compilable`。模型可以调用 `propose_compiled_procedure` 提议沉淀。审批前不会执行原工具或脚本。你同意后，当前会话安装一个 `ec_` 工具；第一步的工具名和常量再次被直接调用时，会改走这个工具。槽位只在被校验的那两次绑定上有参照。没有审批界面时不会安装。
 

@@ -1,6 +1,6 @@
 # Better DSH
 
-Behavior comes from the agent's own experience using tools. Replacement tools and compiled procedures ask for approval before they run. This can spend extra tokens.
+Behavior comes from the agent's own experience using tools, and later changes follow real feedback from DeepSeek models running in DSH. Replacement tools and compiled procedures ask for approval before they run. This can spend extra tokens.
 
 These are two local plugins and are not published to npm. Clone the repo and run the install script on your machine. The desktop app and the CLI share one configuration. The package name stays `dsh-friction-drive`.
 
@@ -32,7 +32,7 @@ To remove it, turn the card off, then uninstall. Do not write an absolute path i
 
 ## What you get
 
-After installation, tools used in the current session are recorded. When a tool fails, retries the same arguments, or returns a truncated result often enough, the next direct call is blocked. A tool is not created before that threshold. If you explicitly ask for one, a confirmation appears first. A refusal records nothing. After you allow the proposal, installing it still needs a second approval, and the original tool stays callable. The session switches to the new tool only after friction has crossed the threshold and you approve the replacement. A name such as `plugin_check` is kept. `${dir}` in the command is replaced with the call argument, and the argument JSON is also written to the file named by `FD_ARGS`. `friction_status` `notes` describe the original problem, the new usage, and the schema. The original tool definition is unchanged. That new tool can be revised later; the revision changes its own schema, execution, and description.
+After installation, tools used in the current session are recorded. When a tool fails, retries the same arguments, or returns a truncated result often enough, the next direct call is blocked. A tool is not created before that threshold. If you explicitly ask for one, a confirmation appears first. A refusal records nothing. After you allow the proposal, installing it still needs a second approval, and the original tool stays callable. The session switches to the new tool only after friction has crossed the threshold and you approve the replacement. A name such as `plugin_check` is kept. Write `node --check ${dir}`. `${dir}` is replaced with a shell-quoted argument, so the template must not add another pair of quotes. The argument JSON is also written to the file named by `FD_ARGS`. `friction_status` `notes` describe the original problem, the new usage, and the schema, and label each tool as `voluntary` or `friction`. The original tool definition is unchanged. That new tool can be revised later; the revision changes its own schema, execution, and description.
 
 When the same sequence succeeds repeatedly, the plugin puts the longest non-overlapping fragments in `friction_status.compilable`. The model may call `propose_compiled_procedure`. Nothing runs the original tool or a script before approval. After you allow it, this session gains an `ec_` tool. A later direct call is redirected only when the first step's tool name and constants match. Slots are checked only against the two validated bindings. A session with no approval UI does not install the tool.
 

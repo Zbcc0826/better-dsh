@@ -114,6 +114,10 @@ export function apply(ctx) {
           engines: entry.engines,
         })),
         owned: Object.keys(catalog.owned ?? {}),
+        origins: Object.fromEntries(Object.entries(catalog.owned ?? {}).map(([name, spec]) => [
+          name,
+          spec?.voluntary ? 'voluntary' : 'friction',
+        ])),
         notes: renderNotes(catalog.owned ?? {}),
         compilable: compilableView(matureFragments(state.trace ?? [], fragmentGuards(state))),
         quality: qualityView(catalog.quality),
