@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { admit, applyAdaptation, approvalCopy, clearGate, failureOf, freshState, gateSkipped, noteCall, notesDescription, ownedCopy, ownedName, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, truncationOf } from './logic.js'
+import { admit, applyAdaptation, approvalCopy, clearGate, failureOf, freshState, gateSkipped, noteCall, normalizeOwnedPatch, notesDescription, ownedCopy, ownedName, ownedPatchHint, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, truncationOf } from './logic.js'
 import { schemaError } from './schema.js'
 import { readSession, sessionDir, withSession } from './store.js'
 
@@ -221,6 +221,35 @@ test('新工具名字带 fd 前缀和时间，覆盖值必须符合原工具字�
   })
   assert.equal(hidden.ok, true)
   assert.equal(ownedCopy(hidden.proposal).zh.includes('x'.repeat(240)), true)
+})
+
+test('JSON Schema 和命令字符串会被收成可安装的提案', () => {
+  const state = freshState(8)
+  state.tools.bash = { gated: true, successor: '' }
+  const usage = '一次调用给出插件目录体检报告。'.padEnd(220, '。')
+  const patch = normalizeOwnedPatch({
+    name: 'plugin_check',
+    problem: '检查本地插件要连开多次 bash。',
+    usage,
+    schema: {
+      type: 'object',
+      properties: {
+        dir: { type: 'string', description: '插件目录绝对路径' },
+        probeUrl: { type: 'string', description: '可选探测地址' },
+      },
+      required: ['dir'],
+      additionalProperties: false,
+    },
+    run: `node --check ${'x'.repeat(1800)}`,
+  })
+  assert.equal(patch.usage.length, 200)
+  assert.equal(patch.schema.dir.required, true)
+  assert.equal(patch.schema.probeUrl.required, undefined)
+  assert.equal(schemaError(patch.schema), null)
+  const created = proposeOwned(state, { id: 'p1', tool: 'bash', ...patch, name: 'fd_bash_1' })
+  assert.equal(created.ok, true)
+  assert.equal(created.proposal.run.kind, 'script')
+  assert.equal(ownedPatchHint('schema').includes('properties'), true)
 })
 
 test('读取会话不创建目录', () => {

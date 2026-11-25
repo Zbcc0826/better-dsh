@@ -7,7 +7,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { allocateCompiledName, assessCompiledProposal, commitCompiled, compilableView, executeCompiled, ingestCall, installCompiled, interceptMatches, markStepAgent, matureFragments, noteRegisteredBreakpoint, stageCompiledRestore, stageCompiledRevision, visibleCompiled } from './compiler.js'
-import { admit, applyAdaptation, approvalCopy, canonicalPatch, clearGate, failureOf, freshTool, gateSkipped, invalidAgainstSchema, ownedCopy, ownedCore, ownedName, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, truncationOf } from './logic.js'
+import { admit, applyAdaptation, approvalCopy, canonicalPatch, clearGate, failureOf, freshTool, gateSkipped, invalidAgainstSchema, normalizeOwnedPatch, ownedCopy, ownedCore, ownedName, ownedPatchHint, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, truncationOf } from './logic.js'
 import { fillTemplate, presentDelegated } from './owned-runtime.js'
 import { assessCritique, assessLoopOffer, assessPlan, qualityCopy, qualityView } from './quality.js'
 import { schemaError } from './schema.js'
@@ -244,9 +244,9 @@ export function apply(ctx) {
       }
       let patch
       try {
-        patch = JSON.parse(args.patch_json)
+        patch = normalizeOwnedPatch(JSON.parse(args.patch_json))
       } catch {
-        return JSON.stringify({ ok: false, code: 'BAD_PATCH' })
+        return JSON.stringify({ ok: false, code: 'BAD_PATCH', hint: ownedPatchHint('schema') })
       }
       if (!entry) {
         const checked = schemaError(patch?.schema)
@@ -276,7 +276,7 @@ export function apply(ctx) {
             delegateSchemaMissing,
           })
         })
-        if (!result.ok) return JSON.stringify(result)
+        if (!result.ok) return JSON.stringify({ ...result, hint: ownedPatchHint(result.key), detail: result.key === 'schema' ? checked : undefined })
         const instruction = result.proposal.kind === 'revise'
           ? `提案已记录。调用 apply_tool_change 修改 ${args.tool}。同意后下一轮使用新的 schema。`
           : `提案已记录。调用 apply_tool_change。同意后使用 ${result.proposal.name}，不要修改 ${args.tool} 本身。`
@@ -473,7 +473,7 @@ function watchTools(ctx, drive) {
     if (gate.gated) {
       const hint = drive.registry.has(exec.name)
         ? '请调用 propose_tool_goal，再调用 apply_tool_change。审批卡由插件填写数字。'
-        : `请调用 propose_tool_goal。patch_json 写 name、problem、usage、schema、run，用来新增本插件的工具。不要修改 ${exec.name} 本身。`
+        : `请调用 propose_tool_goal。patch_json 的 schema 写成 {"dir":{"type":"string","required":true,"description":"目录"}}，run 写成 {"kind":"script","command":"命令"} 或直接写命令字符串。usage 最多 200 字。不要修改 ${exec.name} 本身。`
       return { kind: 'deny', reason: `${exec.name} 的摩擦已过线。${hint}` }
     }
     const intercepted = (gate.intercepts ?? []).find((item) => interceptMatches(item, exec.name, exec.arguments))

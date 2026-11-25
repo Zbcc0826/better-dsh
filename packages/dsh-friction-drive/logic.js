@@ -379,6 +379,72 @@ function invalidOwnedText(value, label) {
   return null
 }
 
+/**
+ * 模型常把 schema 写成 JSON Schema，把 run 写成一整段命令。
+ * 先收成 Harness 的字段写法，再校验。说明超过 200 字时截断，避免只因字数被整份拒绝。
+ */
+export function normalizeOwnedPatch(patch) {
+  if (!plainObject(patch)) return patch
+  const next = { ...patch }
+  if (typeof next.problem === 'string') next.problem = next.problem.trim().slice(0, 200)
+  if (typeof next.usage === 'string') next.usage = next.usage.trim().slice(0, 200)
+  next.schema = authorSchema(next.schema)
+  if (typeof next.run === 'string' && next.run.trim() !== '') next.run = { kind: 'script', command: next.run }
+  return next
+}
+
+/** 把 JSON Schema 或字段数组收成 { 字段名: { type, required, description } }。 */
+function authorSchema(schema) {
+  if (Array.isArray(schema)) {
+    const out = {}
+    for (const field of schema) {
+      if (!plainObject(field) || typeof field.name !== 'string' || field.name === '') continue
+      out[field.name] = authorField(field.name, field, Boolean(field.required))
+    }
+    return out
+  }
+  if (!plainObject(schema)) return schema
+  if (!plainObject(schema.properties)) {
+    const out = {}
+    for (const [key, node] of Object.entries(schema)) {
+      if (!plainObject(node)) {
+        out[key] = node
+        continue
+      }
+      const copy = { ...node }
+      if (copy.required !== true) delete copy.required
+      out[key] = copy
+    }
+    return out
+  }
+  const required = new Set(Array.isArray(schema.required) ? schema.required.filter((item) => typeof item === 'string') : [])
+  const out = {}
+  for (const [key, node] of Object.entries(schema.properties)) {
+    out[key] = authorField(key, plainObject(node) ? node : {}, required.has(key))
+  }
+  return out
+}
+
+function authorField(key, node, required) {
+  const field = {
+    type: typeof node.type === 'string' ? node.type : 'string',
+    description: typeof node.description === 'string' && node.description.trim() !== '' ? node.description : key,
+  }
+  // Harness 只接受 required: true。可选字段不能写 required: false，否则整份 schema 被拒绝。
+  if (required) field.required = true
+  if (Array.isArray(node.enum)) field.enum = node.enum
+  return field
+}
+
+/** 拒绝时告诉模型下一版该怎么写，避免只看到一个 key。 */
+export function ownedPatchHint(key) {
+  if (key === 'schema') return 'schema 写成 {"dir":{"type":"string","required":true,"description":"目录"}}。也可以写带 properties 和 required 的 JSON Schema。'
+  if (key === 'usage' || key === 'problem') return `${key} 最多 200 字。`
+  if (key === 'run') return 'run 写成 {"kind":"script","command":"命令"}，或 {"kind":"delegate","tool":"原工具","overrides":{}}。也可以直接给命令字符串。'
+  if (key === 'command') return '脚本最长 4000 字。'
+  return ''
+}
+
 /** 覆盖值必须是原工具 schema 里已有的字段，并且类型相符。 */
 export function invalidAgainstSchema(schema, values) {
   if (values === undefined) return null
@@ -448,7 +514,7 @@ function invalidOwned(spec, schemaError, delegateSchema, delegateSchemaMissing) 
     }
     return null
   }
-  if (typeof run.command !== 'string' || run.command.trim() === '' || run.command.length > 500) return 'command'
+  if (typeof run.command !== 'string' || run.command.trim() === '' || run.command.length > 4000) return 'command'
   const slots = [...run.command.matchAll(/\{\{([a-zA-Z0-9_]+)\}\}/g)].map((match) => match[1])
   for (const slot of slots) {
     if (!Object.prototype.hasOwnProperty.call(spec.schema, slot)) return slot

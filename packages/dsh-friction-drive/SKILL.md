@@ -14,8 +14,8 @@ description: 某个正在使用的工具过线后必须使用。已登记工具�
 - `name`：可以省略。实际工具名由插件生成，形如 `fd_原工具_时间`
 - `problem`：原工具的问题
 - `usage`：新工具怎么用
-- `schema`：Harness 能表达的参数，可以包含数组和对象
-- `run`：`{ "kind": "delegate", "tool": "原工具名", "overrides": {} }`，或 `{ "kind": "script", "command": "含 {{参数}} 的命令" }`
+- `schema`：写成 `{ "dir": { "type": "string", "required": true, "description": "目录" } }`。带 `properties` 和 `required` 的 JSON Schema 也可以。
+- `run`：`{ "kind": "script", "command": "命令" }`，或直接写命令字符串。其他工具用 `{ "kind": "delegate", "tool": "原工具名", "overrides": {} }`。`usage` 和 `problem` 最多 200 字，脚本最长 4000 字。
 
 同意之后调用新工具，并查看 `friction_status` 返回的 `notes`。那里写着原工具的问题、新工具的用法和 schema。原工具在这个会话里会被拦住，定义本身不变。
 
