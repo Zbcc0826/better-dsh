@@ -489,7 +489,7 @@ function authorField(key, node, required) {
 export function ownedPatchHint(key) {
   if (key === 'schema') return 'schema 写成 {"dir":{"type":"string","required":true,"description":"目录"}}。也可以写带 properties 和 required 的 JSON Schema。'
   if (key === 'usage' || key === 'problem') return `${key} 最多 200 字。`
-  if (key === 'run') return 'run 写成 {"kind":"script","command":"node --check ${dir}"}，或 {"kind":"delegate","tool":"原工具","overrides":{}}。也可以直接给命令字符串。${dir} 会换成带 shell 单引号的值，不要再写 "${dir}"。'
+  if (key === 'run') return 'run 写成 {"kind":"script","command":"node --check ${dir}"}，或 {"kind":"delegate","tool":"原工具","overrides":{}}。也可以直接给命令字符串。${dir} 会换成带 shell 单引号的值，不要再写 "${dir}"。可选字段不传时，命令里的对应槽位换成空字符串。'
   if (key === 'command') return '脚本最长 4000 字。写成 node --check ${dir}。插件会加上 shell 单引号，模板不要再加引号。'
   return ''
 }
@@ -771,7 +771,7 @@ export function renderNotes(owned) {
       ? `来源：用户主动要求（voluntary）。${shown.replaces} 仍可调用。${kept}`
       : `来源：摩擦过线（friction）。代替 ${shown.replaces}。${kept}`
     const quoting = shown.run?.kind === 'script'
-      ? '插值：写成 node --check ${dir}。插件会把值换成带 shell 单引号的参数，模板不要再写 "${dir}" 或 \'${dir}\'。'
+      ? '插值：写成 node --check ${dir}。插件会把值换成带 shell 单引号的参数，模板不要再写 "${dir}" 或 \'${dir}\'。可选字段不传时，对应槽位换成空字符串。'
       : ''
     return [`## ${shown.name}`, relation, `问题：${shown.problem}`, `用法：${shown.usage}`, '参数：', describeSchema(shown.schema), run, quoting].filter(Boolean).join('\n')
   })

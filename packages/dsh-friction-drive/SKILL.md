@@ -14,7 +14,7 @@ description: 摩擦过线后必须处理那一个工具。没过线时不要为�
 - `name`：可写 `plugin_check` 这类语义名。合法且没被占用就保留；不要指望它变成 `fd_bash_时间`。
 - `problem`：原工具的问题，最多 200 字
 - `usage`：新工具怎么用，最多 200 字
-- `schema`：写成 `{ "dir": { "type": "string", "required": true, "description": "目录" } }`。带 `properties` 和 `required` 的 JSON Schema 也可以。可选字段不要写 `required: false`。
+- `schema`：写成 `{ "dir": { "type": "string", "required": true, "description": "目录" } }`。带 `properties` 和 `required` 的 JSON Schema 也可以。可选字段不要写 `required: false`。命令里引用了可选字段、调用时又没传，`${probeUrl}` 会换成空字符串。只有必填字段缺失才报缺少参数。
 - `run`：`{ "kind": "script", "command": "node --check ${dir}" }`，或直接写命令字符串。`${dir}` 和 `{{dir}}` 会换成带 shell 单引号的值，模板不要再写 `"${dir}"` 或 `'${dir}'`，否则路径里会留下字面引号。环境变量 `$dir` 和 `FD_ARGS` 指向的 JSON 是去掉 shell 引号后的原值。其他工具用 `{ "kind": "delegate", "tool": "原工具名", "overrides": {} }`。脚本最长 4000 字。
 - `persist`：只有 `true` 才跨会话保留。不写则只在当前会话。同意后，以后的会话可以直接调用这个工具，原工具不会因此被拦住。卸掉时会从以后的会话一起移除。重启后不必再走两次审批。
 

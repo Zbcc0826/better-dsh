@@ -11,17 +11,39 @@ const MUSTACHE = String.raw`\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}`
 const DOLLAR = String.raw`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`
 
 /**
- * 把 {{参数}} 或 ${参数} 换成 shell 单引号包住的值。缺参数时不拼接命令。
- * 占位符两侧如果只有一层成对引号，先吃掉再放入。这样 "${dir}" 不会变成 "'/path'"。
+ * schema 里没有标成必填的字段。作者字段表看 required !== true，JSON Schema 看 required 数组。
+ * 命令里引用了这些字段、调用时又没传，就换成空字符串，而不是报缺少参数。
  */
-export function fillTemplate(command, args) {
+export function optionalSlots(schema) {
+  if (!schema || typeof schema !== 'object') return new Set()
+  if (schema.properties && typeof schema.properties === 'object') {
+    const required = new Set(Array.isArray(schema.required) ? schema.required : [])
+    return new Set(Object.keys(schema.properties).filter((key) => !required.has(key)))
+  }
+  const optional = new Set()
+  for (const [key, field] of Object.entries(schema)) {
+    if (!field || typeof field !== 'object' || Array.isArray(field)) continue
+    if (field.required !== true) optional.add(key)
+  }
+  return optional
+}
+
+/**
+ * 把 {{参数}} 或 ${参数} 换成 shell 单引号包住的值。
+ * 必填或缺席且不在 optional 里的槽位会让整条命令失败。
+ * 可选槽位没传时换成空字符串。占位符两侧如果只有一层成对引号，先吃掉再放入。
+ */
+export function fillTemplate(command, args, options = {}) {
   const missing = []
+  const optional = options.optional ?? new Set()
   const quoted = (key) => {
-    if (!Object.prototype.hasOwnProperty.call(args ?? {}, key)) {
+    const value = args?.[key]
+    if (!Object.prototype.hasOwnProperty.call(args ?? {}, key) || value === undefined) {
+      if (optional.has(key)) return shellQuote('')
       missing.push(key)
       return ''
     }
-    return shellQuote(args[key])
+    return shellQuote(value)
   }
   const fromGroups = (_all, mustache, dollar) => quoted(mustache || dollar)
   let filled = String(command).replace(
@@ -29,7 +51,7 @@ export function fillTemplate(command, args) {
     (_all, _quote, mustache, dollar) => quoted(mustache || dollar),
   )
   filled = filled.replace(new RegExp(`${MUSTACHE}|${DOLLAR}`, 'g'), fromGroups)
-  if (missing.length > 0) return { ok: false, missing }
+  if (missing.length > 0) return { ok: false, missing: [...new Set(missing)] }
   return { ok: true, command: filled }
 }
 

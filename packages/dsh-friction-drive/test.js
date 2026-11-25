@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, clearGate, failureOf, freshState, gateSkipped, importPersisted, installOwnedRecord, noteCall, normalizeOwnedPatch, notesDescription, ownedCopy, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, persistedRecord, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, semanticOwnedName, truncationOf } from './logic.js'
-import { fillTemplate } from './owned-runtime.js'
+import { fillTemplate, optionalSlots } from './owned-runtime.js'
 import { schemaError } from './schema.js'
 import { readSession, readShared, sessionDir, withSession, withShared } from './store.js'
 
@@ -335,6 +335,19 @@ test('插值自带 shell 引号，模板再包一层也不会叠成字面引号'
   const missing = fillTemplate('node --check ${dir}', {})
   assert.equal(missing.ok, false)
   assert.deepEqual(missing.missing, ['dir'])
+  const schema = {
+    dir: { type: 'string', required: true, description: '目录' },
+    probeUrl: { type: 'string', description: '可选探测地址' },
+  }
+  const optional = optionalSlots(schema)
+  assert.equal(optional.has('dir'), false)
+  assert.equal(optional.has('probeUrl'), true)
+  const skipped = fillTemplate('node check.js ${dir} ${probeUrl}', { dir: '/tmp/plugin' }, { optional })
+  assert.equal(skipped.ok, true)
+  assert.equal(skipped.command, "node check.js '/tmp/plugin' ''")
+  const stillRequired = fillTemplate('node check.js ${dir} ${probeUrl}', {}, { optional })
+  assert.equal(stillRequired.ok, false)
+  assert.deepEqual(stillRequired.missing, ['dir'])
 })
 
 test('persist 为 true 的工具进入以后的会话，且不拦住原工具', () => {

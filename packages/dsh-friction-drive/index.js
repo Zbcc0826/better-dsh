@@ -9,7 +9,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { allocateCompiledName, assessCompiledProposal, commitCompiled, compilableView, executeCompiled, ingestCall, installCompiled, interceptMatches, markStepAgent, matureFragments, noteRegisteredBreakpoint, stageCompiledRestore, stageCompiledRevision, visibleCompiled } from './compiler.js'
 import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, canonicalPatch, clearGate, failureOf, gateSkipped, importPersisted, installOwnedRecord, invalidAgainstSchema, normalizeOwnedPatch, ownedCopy, ownedCore, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, persistedRecord, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, semanticOwnedName, truncationOf } from './logic.js'
-import { fillTemplate, presentDelegated, shellQuote } from './owned-runtime.js'
+import { fillTemplate, optionalSlots, presentDelegated, shellQuote } from './owned-runtime.js'
 import { assessCritique, assessLoopOffer, assessPlan, qualityCopy, qualityView } from './quality.js'
 import { schemaError } from './schema.js'
 import { readSession, readShared, sessionDir, stateRoot, withSession, withShared } from './store.js'
@@ -767,15 +767,20 @@ function writeNotes(sessionId, owned) {
   writeFileSync(path.join(dir, 'notes.md'), body)
 }
 
-/** 把参数写进命令、环境变量和临时 JSON。schema 不再只是说明。 */
-function bindScriptArguments(command, args) {
-  const filled = fillTemplate(command, args)
+/** 把参数写进命令、环境变量和临时 JSON。可选字段没传时写成空字符串。 */
+function bindScriptArguments(command, args, schema) {
+  const optional = optionalSlots(schema)
+  const filled = fillTemplate(command, args, { optional })
   if (!filled.ok) return filled
+  const complete = { ...(args ?? {}) }
+  for (const key of optional) {
+    if (complete[key] === undefined) complete[key] = ''
+  }
   const dir = mkdtempSync(path.join(tmpdir(), 'fd-args-'))
   const file = path.join(dir, 'args.json')
-  writeFileSync(file, JSON.stringify(args ?? {}))
+  writeFileSync(file, JSON.stringify(complete))
   const lines = [`export FD_ARGS=${shellQuote(file)}`]
-  for (const [key, value] of Object.entries(args ?? {})) {
+  for (const [key, value] of Object.entries(complete)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue
     if (['PATH', 'HOME', 'NODE_OPTIONS', 'LD_PRELOAD', 'BASH_ENV'].includes(key)) continue
     lines.push(`export ${key}=${shellQuote(value)}`)
@@ -897,7 +902,7 @@ function ownedDefinition(ctx, drive, spec) {
       if (bypassTool) drive.bypass.set(callId, bypassTool)
       try {
         if (current.run.kind === 'script') {
-          const bound = bindScriptArguments(current.run.command, args)
+          const bound = bindScriptArguments(current.run.command, args, current.schema)
           if (!bound.ok) return { text: `缺少参数 ${bound.missing.join(', ')}`, failed: true }
           const batch = await ctx.tools.execute({
             calls: [{ type: 'tool-call', id: callId, name: 'bash', arguments: JSON.stringify({ command: bound.command, description: `Run ${current.name}` }) }],
