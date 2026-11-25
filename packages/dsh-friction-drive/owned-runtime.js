@@ -7,16 +7,19 @@ export function shellQuote(value) {
   return `'${String(text).replace(/'/g, `'\\''`)}'`
 }
 
-/** 把 {{参数}} 换成引号包住的值。缺参数时不拼接命令。 */
+/** 把 {{参数}} 或 ${参数} 换成引号包住的值。缺参数时不拼接命令。 */
 export function fillTemplate(command, args) {
   const missing = []
-  const filled = String(command).replace(/\{\{([a-zA-Z0-9_]+)\}\}/g, (_all, key) => {
+  const replace = (_all, key) => {
     if (!Object.prototype.hasOwnProperty.call(args ?? {}, key)) {
       missing.push(key)
       return ''
     }
     return shellQuote(args[key])
-  })
+  }
+  const filled = String(command)
+    .replace(/\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}/g, replace)
+    .replace(/\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g, replace)
   if (missing.length > 0) return { ok: false, missing }
   return { ok: true, command: filled }
 }

@@ -176,7 +176,7 @@ try {
     metric: 'failures',
     patch_json: JSON.stringify(ownedPatch),
   }, foreign))
-  if (!foreignProposal.ok || !/^fd_grep_\d+$/.test(foreignProposal.proposal.name)) {
+  if (!foreignProposal.ok || foreignProposal.proposal.name !== 'grep_src') {
     throw new Error(`foreign propose failed ${JSON.stringify(foreignProposal)}`)
   }
   const createdName = foreignProposal.proposal.name

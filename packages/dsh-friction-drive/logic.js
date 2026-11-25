@@ -334,7 +334,7 @@ export function truncationOf(result) {
 /** 本插件注册到进程里的工具名。总长 2 到 41，只能是小写、数字和下划线。 */
 export const OWNED_NAME = /^[a-z][a-z0-9_]{1,40}$/
 
-/** 全局工具名。前缀 fd 加原工具缩写和时间，避免会话之间撞名。 */
+/** 全局工具名。调用方给了合法语义名就用它，否则才退回 fd_原工具_时间。 */
 export function ownedName(tool, now = Date.now(), serial = 0) {
   const stem = String(tool).toLowerCase().replace(/[^a-z0-9_]+/g, '').slice(0, 12) || 'tool'
   const suffix = serial > 0 ? `_${serial}` : ''
@@ -342,6 +342,12 @@ export function ownedName(tool, now = Date.now(), serial = 0) {
   const prefix = `fd_${stem}_`
   const room = 41 - prefix.length - suffix.length
   return `${prefix}${stamp.slice(-Math.max(room, 1))}${suffix}`
+}
+
+/** 把 plugin-check 收成 plugin_check。不合规则时返回空字符串。 */
+export function semanticOwnedName(name) {
+  const stem = String(name ?? '').toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 41)
+  return OWNED_NAME.test(stem) ? stem : ''
 }
 
 /** 内部调用只有目标就是被代替的那个工具时，才跳过它的闸门。 */
@@ -371,7 +377,27 @@ export function ownedCore(spec) {
 }
 
 export function sameOwned(left, right) {
-  return JSON.stringify(ownedCore(left)) === JSON.stringify(ownedCore(right))
+  return JSON.stringify(stable(ownedCore(left))) === JSON.stringify(stable(ownedCore(right)))
+}
+
+/** 审批时比较规范化后的补丁。说明文字和键顺序不同不算两份提案。 */
+export function patchesMatch(stored, incoming) {
+  return JSON.stringify(loosen(ownedCore(stored))) === JSON.stringify(loosen(ownedCore(incoming)))
+}
+
+function loosen(core) {
+  const schema = {}
+  for (const [key, node] of Object.entries(core.schema ?? {})) {
+    if (!plainObject(node)) continue
+    schema[key] = { type: node.type, ...(node.required === true ? { required: true } : {}) }
+  }
+  return stable({ ...core, schema })
+}
+
+function stable(value) {
+  if (Array.isArray(value)) return value.map(stable)
+  if (!plainObject(value)) return value
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]))
 }
 
 function invalidOwnedText(value, label) {
@@ -388,7 +414,7 @@ export function normalizeOwnedPatch(patch) {
   const next = { ...patch }
   if (typeof next.problem === 'string') next.problem = next.problem.trim().slice(0, 200)
   if (typeof next.usage === 'string') next.usage = next.usage.trim().slice(0, 200)
-  next.schema = authorSchema(next.schema)
+  if (next.schema !== undefined) next.schema = authorSchema(next.schema)
   if (typeof next.run === 'string' && next.run.trim() !== '') next.run = { kind: 'script', command: next.run }
   return next
 }
@@ -443,6 +469,15 @@ export function ownedPatchHint(key) {
   if (key === 'run') return 'run 写成 {"kind":"script","command":"命令"}，或 {"kind":"delegate","tool":"原工具","overrides":{}}。也可以直接给命令字符串。'
   if (key === 'command') return '脚本最长 4000 字。'
   return ''
+}
+
+/** 校验失败时给一份能通过的最小提案，避免模型继续猜格式。 */
+export function ownedPatchExample() {
+  return {
+    usage: '检查一个插件目录',
+    schema: { dir: { type: 'string', required: true, description: '目录' } },
+    run: { kind: 'script', command: 'node --check ${dir}' },
+  }
 }
 
 /** 覆盖值必须是原工具 schema 里已有的字段，并且类型相符。 */

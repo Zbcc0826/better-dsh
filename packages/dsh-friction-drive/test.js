@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { admit, applyAdaptation, approvalCopy, clearGate, failureOf, freshState, gateSkipped, noteCall, normalizeOwnedPatch, notesDescription, ownedCopy, ownedName, ownedPatchHint, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, truncationOf } from './logic.js'
+import { admit, applyAdaptation, approvalCopy, clearGate, failureOf, freshState, gateSkipped, noteCall, normalizeOwnedPatch, notesDescription, ownedCopy, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, semanticOwnedName, truncationOf } from './logic.js'
 import { schemaError } from './schema.js'
 import { readSession, sessionDir, withSession } from './store.js'
 
@@ -246,10 +246,17 @@ test('JSON Schema 和命令字符串会被收成可安装的提案', () => {
   assert.equal(patch.schema.dir.required, true)
   assert.equal(patch.schema.probeUrl.required, undefined)
   assert.equal(schemaError(patch.schema), null)
-  const created = proposeOwned(state, { id: 'p1', tool: 'bash', ...patch, name: 'fd_bash_1' })
+  const created = proposeOwned(state, { id: 'p1', tool: 'bash', ...patch, name: 'plugin_check' })
   assert.equal(created.ok, true)
+  assert.equal(created.proposal.name, 'plugin_check')
   assert.equal(created.proposal.run.kind, 'script')
+  assert.equal(patchesMatch(created.proposal, { ...patch, description: '被忽略的可选说明', name: 'plugin_check' }), true)
   assert.equal(ownedPatchHint('schema').includes('properties'), true)
+  const named = semanticOwnedName('plugin-check')
+  assert.equal(named, 'plugin_check')
+  const example = ownedPatchExample()
+  assert.equal(example.usage.length <= 200, true)
+  assert.equal(example.run.command.includes('${dir}'), true)
 })
 
 test('读取会话不创建目录', () => {

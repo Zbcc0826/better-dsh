@@ -3,12 +3,13 @@
  * 工具定义由插件写入当前会话的目录，预计调用次数按登记公式计算。
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { allocateCompiledName, assessCompiledProposal, commitCompiled, compilableView, executeCompiled, ingestCall, installCompiled, interceptMatches, markStepAgent, matureFragments, noteRegisteredBreakpoint, stageCompiledRestore, stageCompiledRevision, visibleCompiled } from './compiler.js'
-import { admit, applyAdaptation, approvalCopy, canonicalPatch, clearGate, failureOf, freshTool, gateSkipped, invalidAgainstSchema, normalizeOwnedPatch, ownedCopy, ownedCore, ownedName, ownedPatchHint, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, truncationOf } from './logic.js'
-import { fillTemplate, presentDelegated } from './owned-runtime.js'
+import { admit, applyAdaptation, approvalCopy, canonicalPatch, clearGate, failureOf, freshTool, gateSkipped, invalidAgainstSchema, normalizeOwnedPatch, ownedCopy, ownedCore, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, semanticOwnedName, truncationOf } from './logic.js'
+import { fillTemplate, presentDelegated, shellQuote } from './owned-runtime.js'
 import { assessCritique, assessLoopOffer, assessPlan, qualityCopy, qualityView } from './quality.js'
 import { schemaError } from './schema.js'
 import { readSession, sessionDir, stateRoot, withSession } from './store.js'
@@ -251,7 +252,7 @@ export function apply(ctx) {
       if (!entry) {
         const checked = schemaError(patch?.schema)
         const currentOwned = readSession(ROOT(), sessionId, drive.threshold).catalog.owned?.[args.tool]
-        const generated = currentOwned ? args.tool : allocateName(drive, args.tool)
+        const generated = currentOwned ? args.tool : pickOwnedName(ctx, drive, sessionId, args.tool, patch?.name)
         const delegateTarget = patch?.run?.kind === 'script' ? '' : String(patch?.run?.tool ?? args.tool)
         const delegateSchema = delegateTarget ? toolParameters(ctx, delegateTarget, exec.agent) : undefined
         const delegateSchemaMissing = Boolean(delegateTarget) && !delegateSchema
@@ -276,11 +277,18 @@ export function apply(ctx) {
             delegateSchemaMissing,
           })
         })
-        if (!result.ok) return JSON.stringify({ ...result, hint: ownedPatchHint(result.key), detail: result.key === 'schema' ? checked : undefined })
+        if (!result.ok) {
+          return JSON.stringify({
+            ...result,
+            hint: ownedPatchHint(result.key),
+            example: ownedPatchExample(),
+            detail: result.key === 'schema' ? checked : undefined,
+          })
+        }
         const instruction = result.proposal.kind === 'revise'
-          ? `提案已记录。调用 apply_tool_change 修改 ${args.tool}。同意后下一轮使用新的 schema。`
-          : `提案已记录。调用 apply_tool_change。同意后使用 ${result.proposal.name}，不要修改 ${args.tool} 本身。`
-        return JSON.stringify({ ...result, instruction })
+          ? `提案已记录。调用 apply_tool_change 修改 ${args.tool}，patch_json 原样使用返回的 patch。同意后下一轮使用新的 schema。如果还不能完成任务，可以再对 ${result.proposal.name} 提出下一步修改。`
+          : `提案已记录。调用 apply_tool_change，tool 填 ${args.tool}，patch_json 原样使用返回的 patch。同意后使用 ${result.proposal.name}。如果它还不能完成任务，再对 ${result.proposal.name} 调用 propose_tool_goal，向用户提出下一步修改。`
+        return JSON.stringify({ ...result, patch: ownedCore(result.proposal), instruction })
       }
       const result = withSession(ROOT(), sessionId, drive.threshold, ({ state, catalog }) => {
         ensureSeed(catalog, entry)
@@ -318,15 +326,21 @@ export function apply(ctx) {
       if (!sessionId) return JSON.stringify({ ok: false, code: 'SESSION_REQUIRED' })
       let patch
       try {
-        patch = JSON.parse(args.patch_json)
+        patch = normalizeOwnedPatch(JSON.parse(args.patch_json))
       } catch {
-        return JSON.stringify({ ok: false, code: 'BAD_PATCH' })
+        return JSON.stringify({ ok: false, code: 'BAD_PATCH', hint: ownedPatchHint('schema'), example: ownedPatchExample() })
       }
-      const pending = withSession(ROOT(), sessionId, drive.threshold, ({ state }) => state.proposals[args.tool] ?? null)
+      const pending = withSession(ROOT(), sessionId, drive.threshold, ({ state }) => findProposal(state, args.tool))
       if (!pending) return JSON.stringify({ ok: false, code: 'NO_PROPOSAL' })
       if (pending.kind === 'create' || pending.kind === 'revise') {
-        if (!sameOwned(pending, { ...patch, name: pending.name })) {
-          return JSON.stringify({ ok: false, code: 'PATCH_MISMATCH' })
+        if (!patchesMatch(pending, { ...patch, name: pending.name })) {
+          return JSON.stringify({
+            ok: false,
+            code: 'PATCH_MISMATCH',
+            hint: 'patch_json 使用 propose_tool_goal 返回的 patch。可选字段和键顺序可以不同。',
+            patch: ownedCore(pending),
+            example: ownedPatchExample(),
+          })
         }
         const copy = ownedCopy(pending)
         const outcome = await askApproval(ctx, exec, args.tool, copy.zh, copy)
@@ -622,16 +636,25 @@ function toolParameters(ctx, name, agent) {
   return listed.find((item) => item.name === name)?.parameters
 }
 
-/** 新工具的全局名字。fd、原工具缩写、时间，同一毫秒再加序号。 */
-function allocateName(drive, tool) {
+/** 新工具的全局名字。调用方给了 plugin_check 这类合法名字就保留，撞名再加序号。 */
+function pickOwnedName(ctx, drive, sessionId, tool, requested) {
+  const preferred = semanticOwnedName(requested)
   let serial = 0
-  let name = ownedName(tool, Date.now(), serial)
-  const used = new Set([...drive.ownedBindings.values()].map((bound) => bound.name))
-  while (used.has(name)) {
+  let name = preferred || ownedName(tool, Date.now(), serial)
+  while (nameTaken(ctx, drive, sessionId, name) || [...drive.ownedBindings.values()].some((bound) => bound.name === name)) {
     serial += 1
-    name = ownedName(tool, Date.now(), serial)
+    const suffix = `_${serial}`
+    const base = preferred || ownedName(tool, Date.now(), 0)
+    name = `${base.slice(0, 41 - suffix.length)}${suffix}`
   }
   return name
+}
+
+/** 用原工具名或新工具名都能找到提案。 */
+function findProposal(state, tool) {
+  const direct = state.proposals?.[tool]
+  if (direct) return direct
+  return Object.values(state.proposals ?? {}).find((item) => item?.name === tool) ?? null
 }
 
 /** 名字已被原工具或其他会话占用时，在审批前拒绝。 */
@@ -666,6 +689,26 @@ function writeNotes(sessionId, owned) {
   mkdirSync(dir, { recursive: true })
   const body = Object.keys(owned ?? {}).length > 0 ? renderNotes(owned) : ''
   writeFileSync(path.join(dir, 'notes.md'), body)
+}
+
+/** 把参数写进命令、环境变量和临时 JSON。schema 不再只是说明。 */
+function bindScriptArguments(command, args) {
+  const filled = fillTemplate(command, args)
+  if (!filled.ok) return filled
+  const dir = mkdtempSync(path.join(tmpdir(), 'fd-args-'))
+  const file = path.join(dir, 'args.json')
+  writeFileSync(file, JSON.stringify(args ?? {}))
+  const lines = [`export FD_ARGS=${shellQuote(file)}`]
+  for (const [key, value] of Object.entries(args ?? {})) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue
+    if (['PATH', 'HOME', 'NODE_OPTIONS', 'LD_PRELOAD', 'BASH_ENV'].includes(key)) continue
+    lines.push(`export ${key}=${shellQuote(value)}`)
+  }
+  return {
+    ok: true,
+    command: `${lines.join('\n')}\n${filled.command}`,
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  }
 }
 
 /** 只挂到这个 agent。schema 没变就不动已注册的工具，避免当前这一步丢失它。 */
@@ -744,14 +787,16 @@ function ownedDefinition(ctx, drive, spec) {
       if (bypassTool) drive.bypass.set(callId, bypassTool)
       try {
         if (current.run.kind === 'script') {
-          const filled = fillTemplate(current.run.command, args)
-          if (!filled.ok) return { text: `invalid arguments: missing ${filled.missing.join(', ')}`, failed: false }
+          const bound = bindScriptArguments(current.run.command, args)
+          if (!bound.ok) return { text: `缺少参数 ${bound.missing.join(', ')}`, failed: true }
           const batch = await ctx.tools.execute({
-            calls: [{ type: 'tool-call', id: callId, name: 'bash', arguments: JSON.stringify({ command: filled.command, description: `Run ${current.name}` }) }],
+            calls: [{ type: 'tool-call', id: callId, name: 'bash', arguments: JSON.stringify({ command: bound.command, description: `Run ${current.name}` }) }],
             agent: exec.agent,
             signal: exec.signal,
           })
-          return presentDelegated(batch?.results?.[0]?.result, null)
+          const presented = presentDelegated(batch?.results?.[0]?.result, null)
+          bound.cleanup()
+          return presented
         }
         const merged = applyAdaptation(current.run, args ?? {})
         const batch = await ctx.tools.execute({

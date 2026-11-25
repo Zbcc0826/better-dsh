@@ -11,13 +11,13 @@ description: 某个正在使用的工具过线后必须使用。已登记工具�
 
 正在使用、但没有登记的工具，不修改它的定义。过线后调用 `propose_tool_goal`，`patch_json` 写：
 
-- `name`：可以省略。实际工具名由插件生成，形如 `fd_原工具_时间`
-- `problem`：原工具的问题
-- `usage`：新工具怎么用
-- `schema`：写成 `{ "dir": { "type": "string", "required": true, "description": "目录" } }`。带 `properties` 和 `required` 的 JSON Schema 也可以。
-- `run`：`{ "kind": "script", "command": "命令" }`，或直接写命令字符串。其他工具用 `{ "kind": "delegate", "tool": "原工具名", "overrides": {} }`。`usage` 和 `problem` 最多 200 字，脚本最长 4000 字。
+- `name`：可写 `plugin_check` 这类语义名。合法且没被占用就保留；不要指望它变成 `fd_bash_时间`。
+- `problem`：原工具的问题，最多 200 字
+- `usage`：新工具怎么用，最多 200 字
+- `schema`：写成 `{ "dir": { "type": "string", "required": true, "description": "目录" } }`。带 `properties` 和 `required` 的 JSON Schema 也可以。可选字段不要写 `required: false`。
+- `run`：`{ "kind": "script", "command": "node --check ${dir}" }`，或直接写命令字符串。`${dir}` 和 `{{dir}}` 都会换成这次调用的参数。参数 JSON 同时放在环境变量 `FD_ARGS` 指向的文件里。其他工具用 `{ "kind": "delegate", "tool": "原工具名", "overrides": {} }`。脚本最长 4000 字。
 
-同意之后调用新工具，并查看 `friction_status` 返回的 `notes`。那里写着原工具的问题、新工具的用法和 schema。原工具在这个会话里会被拦住，定义本身不变。
+同意之后调用返回的 `patch` 里的工具名，并查看 `friction_status` 返回的 `notes`。`apply_tool_change` 的 `patch_json` 原样使用 `propose_tool_goal` 返回的 `patch`。如果装上的工具还不能完成任务，再对这个工具名调用 `propose_tool_goal`，向用户提出下一步修改。原工具在这个会话里会被拦住，定义本身不变。
 
 新工具属于本插件，可以再改。对它再次调用 `propose_tool_goal`，写一份不同的 `problem`、`usage`、`schema` 或 `run`。相同的一版会被拒绝。名字保持不变。同意后，本轮仍使用旧的 schema 和说明。这一轮结束后，schema、执行方式和 notes 一起换成新的一版。
 

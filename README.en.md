@@ -32,7 +32,7 @@ To remove it, turn the card off, then uninstall. Do not write an absolute path i
 
 ## What you get
 
-After installation, tools used in the current session are recorded. When a tool fails, retries the same arguments, or returns a truncated result often enough, the next direct call is blocked. After you allow it, the plugin adds a tool that exists only in this session. `friction_status` `notes` describe the original problem, the new usage, and the schema. The original tool definition is unchanged. That new tool can be revised later; the revision changes its own schema, execution, and description.
+After installation, tools used in the current session are recorded. When a tool fails, retries the same arguments, or returns a truncated result often enough, the next direct call is blocked. After you allow it, the plugin adds a tool that exists only in this session. A name such as `plugin_check` is kept. `${dir}` in the command is replaced with the call argument, and the argument JSON is also written to the file named by `FD_ARGS`. `friction_status` `notes` describe the original problem, the new usage, and the schema. The original tool definition is unchanged. That new tool can be revised later; the revision changes its own schema, execution, and description.
 
 When the same sequence succeeds repeatedly, the plugin puts the longest non-overlapping fragments in `friction_status.compilable`. The model may call `propose_compiled_procedure`. Nothing runs the original tool or a script before approval. After you allow it, this session gains an `ec_` tool. A later direct call is redirected only when the first step's tool name and constants match. Slots are checked only against the two validated bindings. A session with no approval UI does not install the tool.
 
