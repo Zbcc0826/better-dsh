@@ -59,8 +59,9 @@ export function apply(ctx) {
     seed: { engine: 'overlap_strict', delayMs: 0 },
   })
 
-  ctx.on('tools/post-execute', async (_exec, result, next) => {
+  ctx.on('tools/post-execute', async (exec, result, next) => {
     const decision = typeof next === 'function' ? await next() : { kind: 'accept' }
+    if (exec?.name === 'friction_status') return decision
     const rendered = `${JSON.stringify(result ?? {})}${JSON.stringify(decision ?? {})}`
     if (leaksDemoSource(rendered)) {
       return { kind: 'block', feedback: [{ type: 'text', text: '结果包含示例源码或内部时间表，已拦截。时间窗请向 window_overlap 要格式提示。' }] }

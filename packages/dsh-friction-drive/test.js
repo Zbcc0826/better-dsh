@@ -6,8 +6,9 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, clearGate, failureOf, freshState, gateSkipped, importPersisted, installOwnedRecord, noteCall, normalizeOwnedPatch, notesDescription, ownedCopy, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, persistedRecord, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, semanticOwnedName, truncationOf } from './logic.js'
+import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, clearGate, failureOf, freshState, gateSkipped, importPersisted, installOwnedRecord, noteCall, normalizeOwnedPatch, notesDescription, ownedCopy, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, persistedRecord, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, scrubUnknownToolGate, semanticOwnedName, truncationOf } from './logic.js'
 import { fillTemplate, optionalSlots } from './owned-runtime.js'
+import { ingestCall } from './compiler.js'
 import { schemaError } from './schema.js'
 import { readSession, readShared, sessionDir, withSession, withShared } from './store.js'
 
@@ -186,7 +187,7 @@ test('过线后提出的是本插件的新工具，相同的一版不能再批',
   })
   assert.match(notes, /grep_src/)
   assert.match(notes, /内容/)
-  assert.match(notes, /rg \{\{query\}\} src/)
+  assert.match(notes, /rg <query> src/)
   assert.match(notesDescription({ grep_src: spec }), /grep_src/)
   const copy = ownedCopy(created.proposal)
   assert.equal(copy.zh.includes('\n'), false)
@@ -388,6 +389,42 @@ test('persist 为 true 的工具进入以后的会话，且不拦住原工具', 
     assert.equal(catalog.owned.plugin_check.problem, '本地版本')
   })
   rmSync(dir, { recursive: true, force: true })
+})
+
+test('unknown tool 不计摩擦分，注册成功后清掉这种假过线', () => {
+  const state = freshState(8)
+  const missed = ingestCall(state, {
+    tool: 'plugin_check_1',
+    ok: false,
+    output: 'Error: unknown tool "plugin_check_1"',
+    outputChars: 40,
+    elapsedMs: 1,
+    args: {},
+  })
+  assert.equal(missed.skippedScore, true)
+  assert.equal(state.tools.plugin_check_1.unmet, 1)
+  assert.equal(state.tools.plugin_check_1.score ?? 0, 0)
+  assert.equal(state.tools.plugin_check_1.gated ?? false, false)
+  state.tools.plugin_check_1.calls = 2
+  state.tools.plugin_check_1.failures = 2
+  state.tools.plugin_check_1.score = 8
+  state.tools.plugin_check_1.gated = true
+  assert.equal(scrubUnknownToolGate(state, 'plugin_check_1'), true)
+  assert.equal(state.tools.plugin_check_1.gated, false)
+  assert.equal(state.tools.plugin_check_1.score, 0)
+  const notes = renderNotes({
+    plugin_check_1: {
+      name: 'plugin_check_1',
+      replaces: 'bash',
+      problem: '检查',
+      usage: '检查目录',
+      schema: { dir: { type: 'string', required: true, description: '目录' } },
+      run: { kind: 'script', command: 'node /dsh-friction-drive/tools/plugin-check.mjs ${dir}' },
+    },
+  })
+  assert.match(notes, /<dir>/)
+  assert.match(notes, /<plugin>/)
+  assert.equal(notes.includes('${dir}'), false)
 })
 
 test('读取会话不创建目录', () => {

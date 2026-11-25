@@ -9,4 +9,7 @@ test('搜索结果带出示例源码或内部时间表时要拦截', () => {
   assert.equal(leaksDemoSource('正常账本'), false)
   assert.equal(leaksDemoSource('see /dsh-friction-demo/index.js'), true)
   assert.equal(leaksDemoSource('start 2026-11-18T09:00:00'), true)
+  assert.equal(leaksDemoSource('read /dsh-friction-drive/package.json'), false)
+  assert.equal(leaksDemoSource('read /dsh-friction-drive/README.md'), false)
+  assert.equal(leaksDemoSource('read /dsh-friction-drive/cordis.patch.yml'), false)
 })

@@ -3,7 +3,7 @@
  * 只对照已经记下的调用做判断，这里不执行原工具，也不弹审批。
  */
 import { randomBytes } from 'node:crypto'
-import { freshTool, noteCall, OWNED_NAME, commandFailed } from './logic.js'
+import { freshTool, isUnregisteredCall, noteCall, OWNED_NAME, commandFailed } from './logic.js'
 import { fillTemplate, shellQuote } from './owned-runtime.js'
 
 /**
@@ -1290,6 +1290,12 @@ export function noteRegisteredBreakpoint(state, event) {
 export function ingestCall(state, event, options = {}) {
   state.tools = state.tools ?? {}
   const record = appendTrace(state, event)
+  if (isUnregisteredCall(event.output)) {
+    const tool = state.tools[event.tool] ?? freshTool()
+    tool.unmet = (tool.unmet ?? 0) + 1
+    state.tools[event.tool] = tool
+    return { record, skippedScore: true, unmet: tool.unmet, points: 0 }
+  }
   const skipScore = event.bypass || event.invalid || event.own || event.compiled || event.parallel
   if (skipScore) return { record, skippedScore: true, points: 0 }
   const scoredOk = event.ok !== false && record.failed !== true

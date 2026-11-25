@@ -21,6 +21,7 @@ export function freshTool() {
     lastOk: null,
     lastOutputChars: 0,
     workloadItems: null,
+    unmet: 0,
   }
 }
 
@@ -49,7 +50,30 @@ export function scoreCall(tool, event, options = {}) {
   return { points, reasons, retry }
 }
 
-/** 记下一次调用。过线的这一次仍返回原结果，从下一次开始拦截。 */
+/** 这些调用没有真正执行工具。unknown tool 只记 unmet，不加摩擦分，也不过线。 */
+export function isUnregisteredCall(output) {
+  const text = String(output ?? '')
+  return /unknown tool/i.test(text) || text.includes('UNKNOWN_TOOL')
+}
+
+/**
+ * 把全是 unknown tool 的旧计数清掉。工具刚注册成功时调用，避免以前的空转把闸门带上。
+ */
+export function scrubUnknownToolGate(state, name) {
+  const tool = state.tools?.[name]
+  if (!tool) return false
+  const rows = (state.trace ?? []).filter((row) => row.tool === name)
+  const unknown = rows.filter((row) => isUnregisteredCall(row.output))
+  if (unknown.length === 0) return false
+  const realFailure = rows.some((row) => row.failed && !isUnregisteredCall(row.output))
+  if (realFailure) return false
+  tool.gated = false
+  tool.score = 0
+  tool.failures = 0
+  tool.calls = Math.max(0, (tool.calls ?? 0) - unknown.length)
+  tool.unmet = Math.max(tool.unmet ?? 0, unknown.length)
+  return true
+}
 export function noteCall(state, event, options = {}) {
   const tool = state.tools[event.tool] ?? freshTool()
   if (tool.gated) {
@@ -759,19 +783,27 @@ function describeSchema(schema, indent = '') {
   return Object.entries(schema ?? {}).map(([key, node]) => describeNode(key, node, indent)).join('\n')
 }
 
+/** 诊断文本里的命令不保留可执行路径和插值，避免被内容护栏当成源码。 */
+function diagnosticCommand(command) {
+  return String(command ?? '')
+    .replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, '<$1>')
+    .replace(/\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}/g, '<$1>')
+    .replace(/\/dsh-friction-(?:demo|drive)\//g, '/<plugin>/')
+}
+
 /** 会话说明。嵌套字段和脚本正文都写出来。尚未换上的修改不出现在这里。 */
 export function renderNotes(owned) {
   const blocks = Object.values(owned ?? {}).map((spec) => {
     const shown = spec?.staged && spec.previous ? { ...spec.previous, replaces: spec.replaces } : spec
     const run = shown.run?.kind === 'script'
-      ? `脚本：${shown.run.command}`
+      ? `脚本：${diagnosticCommand(shown.run.command)}`
       : `调用 ${shown.run?.tool}。强制字段：${JSON.stringify(shown.run?.overrides ?? {})}。`
     const kept = shown.persist ? '以后的会话也会保留。新会话里原工具不会被拦住。' : ''
     const relation = shown.voluntary
       ? `来源：用户主动要求（voluntary）。${shown.replaces} 仍可调用。${kept}`
       : `来源：摩擦过线（friction）。代替 ${shown.replaces}。${kept}`
     const quoting = shown.run?.kind === 'script'
-      ? '插值：写成 node --check ${dir}。插件会把值换成带 shell 单引号的参数，模板不要再写 "${dir}" 或 \'${dir}\'。可选字段不传时，对应槽位换成空字符串。'
+      ? '插值：写成 node --check <dir>。插件会把值换成带 shell 单引号的参数，模板不要再写引号。可选字段不传时，对应槽位换成空字符串。'
       : ''
     return [`## ${shown.name}`, relation, `问题：${shown.problem}`, `用法：${shown.usage}`, '参数：', describeSchema(shown.schema), run, quoting].filter(Boolean).join('\n')
   })

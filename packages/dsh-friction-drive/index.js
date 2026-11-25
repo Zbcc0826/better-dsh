@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { allocateCompiledName, assessCompiledProposal, commitCompiled, compilableView, executeCompiled, ingestCall, installCompiled, interceptMatches, markStepAgent, matureFragments, noteRegisteredBreakpoint, stageCompiledRestore, stageCompiledRevision, visibleCompiled } from './compiler.js'
-import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, canonicalPatch, clearGate, failureOf, gateSkipped, importPersisted, installOwnedRecord, invalidAgainstSchema, normalizeOwnedPatch, ownedCopy, ownedCore, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, persistedRecord, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, semanticOwnedName, truncationOf } from './logic.js'
+import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, canonicalPatch, clearGate, failureOf, gateSkipped, importPersisted, installOwnedRecord, invalidAgainstSchema, normalizeOwnedPatch, ownedCopy, ownedCore, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, persistedRecord, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, scrubUnknownToolGate, semanticOwnedName, truncationOf } from './logic.js'
 import { fillTemplate, optionalSlots, presentDelegated, shellQuote } from './owned-runtime.js'
 import { assessCritique, assessLoopOffer, assessPlan, qualityCopy, qualityView } from './quality.js'
 import { schemaError } from './schema.js'
@@ -25,6 +25,7 @@ export function apply(ctx) {
     registry: new Map(),
     ownedBindings: new Map(),
     sharedBindings: new Map(),
+    registration: new Map(),
     agents: new Set(),
     started: new Map(),
     // 还没返回又来了另一次调用时，这两次都算并行，不参与片段。
@@ -101,9 +102,12 @@ export function apply(ctx) {
     description: '查看本会话里已登记工具的失败、重试、截断和是否已过线。不计分。',
     parameters: {},
     output: textOutput(),
-    async execute(_args, exec) {
+    async execute(args, exec) {
       const sessionId = drive.sessionOf(exec)
       if (!sessionId) return JSON.stringify({ ok: false, code: 'SESSION_REQUIRED' })
+      if (exec.agent) {
+        try { bindSession(ctx, drive, exec.agent) } catch { /* 注册失败仍返回状态，错误在 registrationError */ }
+      }
       return JSON.stringify(withSession(ROOT(), sessionId, drive.threshold, ({ state, catalog }) => {
         importPersisted(state, catalog, readShared(ROOT()).owned)
         return {
@@ -116,7 +120,16 @@ export function apply(ctx) {
           patchKeys: entry.patchKeys,
           engines: entry.engines,
         })),
-        owned: Object.keys(catalog.owned ?? {}),
+        owned: Object.entries(catalog.owned ?? {}).map(([name, spec]) => {
+          const snap = drive.registration.get(spec?.persist ? `shared:${name}` : `${sessionId}:${name}`) ?? {}
+          return {
+            name,
+            persist: spec?.persist === true,
+            registered: snap.registered === true,
+            registeredAt: snap.registeredAt ?? spec?.registeredAt ?? null,
+            registrationError: snap.registrationError ?? spec?.registrationError ?? null,
+          }
+        }),
         origins: Object.fromEntries(Object.entries(catalog.owned ?? {}).map(([name, spec]) => [
           name,
           spec?.voluntary ? 'voluntary' : 'friction',
@@ -507,10 +520,25 @@ export function apply(ctx) {
       return proposeCompiled(ctx, drive, args, exec)
     },
   }))
+  attachLiveAgents(ctx, drive)
 }
 
 function ensureSeed(catalog, entry) {
   if (!catalog.tools[entry.name]) catalog.tools[entry.name] = structuredClone(entry.seed)
+}
+
+/** 插件加载时，已经在跑的会话也要先挂上持久工具。 */
+function attachLiveAgents(ctx, drive) {
+  let registry
+  try {
+    registry = typeof ctx.get === 'function' ? ctx.get('agent') : undefined
+  } catch {
+    registry = undefined
+  }
+  for (const agent of registry?.list?.() ?? []) {
+    drive.agents.add(agent)
+    try { bindSession(ctx, drive, agent) } catch { /* 单条错误记在 registrationError */ }
+  }
 }
 
 /** 会话打开后补挂已经批准的新工具。挂不上就等下一轮，不占用全局工具表。 */
@@ -527,6 +555,22 @@ function armOwnedTools(ctx, drive) {
 
 /** 给所有正在使用的工具记账，并在过线或已批准后拦住对原工具的直接调用。 */
 function watchTools(ctx, drive) {
+  ctx.on('session/created', (session) => {
+    const id = String(session?.id ?? '')
+    if (!id) return
+    for (const agent of drive.agents) {
+      if (drive.sessionOf({ agent }) === id) bindSession(ctx, drive, agent)
+    }
+  })
+  ctx.on('agent/disposed', ({ agent }) => {
+    const sessionId = drive.sessionOf({ agent })
+    drive.agents.delete(agent)
+    for (const [key, bound] of drive.ownedBindings) {
+      if (!key.startsWith(`${sessionId}:`)) continue
+      try { bound.dispose?.() } catch { /* 作用域结束时注册已经卸掉 */ }
+      drive.ownedBindings.delete(key)
+    }
+  })
   ctx.on('agent/created', ({ agent }) => {
     if (agent) drive.agents.add(agent)
     // 子代理创建发生在本轮进行中。这里只补挂已生效的工具，不提交尚未换上的修改。
@@ -801,28 +845,63 @@ function ensurePersisted(drive, sessionId) {
   })
 }
 
-/** 跨会话工具只注册一次，所有会话都能看见。原工具不会因此被拦住。 */
-function bindShared(ctx, tools, drive) {
+/** 跨会话工具挂在插件自己的工具表上，不跟着上一个 agent 一起卸掉。 */
+function bindShared(ctx, drive) {
+  const tools = ctx.tools
+  if (!tools?.register) return
   const shared = readShared(ROOT()).owned ?? {}
   const alive = new Set(Object.keys(shared))
   for (const [key, bound] of drive.sharedBindings) {
     if (alive.has(bound.name)) continue
-    bound.dispose?.()
+    try { bound.dispose?.() } catch { /* 已经卸掉 */ }
     drive.sharedBindings.delete(key)
+    drive.registration.delete(key)
   }
   for (const spec of Object.values(shared)) {
     if (spec?.persist !== true || !spec.name) continue
     const key = `shared:${spec.name}`
     const hash = JSON.stringify(ownedCore(spec))
     const bound = drive.sharedBindings.get(key)
-    if (bound?.hash === hash) continue
-    bound?.dispose?.()
-    const dispose = tools.register(defineTool(ownedDefinition(ctx, drive, spec)))
-    drive.sharedBindings.set(key, { hash, dispose, name: spec.name })
+    if (bound?.hash === hash) {
+      drive.registration.set(key, { registered: true, registeredAt: bound.registeredAt, registrationError: null })
+      continue
+    }
+    try { bound?.dispose?.() } catch { /* 旧注册已经随会话结束 */ }
+    try {
+      const dispose = tools.register(defineTool(ownedDefinition(ctx, drive, spec)))
+      const registeredAt = new Date().toISOString()
+      drive.sharedBindings.set(key, { hash, dispose, name: spec.name, registeredAt })
+      drive.registration.set(key, { registered: true, registeredAt, registrationError: null })
+    } catch (error) {
+      drive.sharedBindings.delete(key)
+      drive.registration.set(key, {
+        registered: false,
+        registeredAt: null,
+        registrationError: error instanceof Error ? error.message : String(error),
+      })
+    }
   }
 }
 
-/** 只挂到这个 agent。schema 没变就不动已注册的工具，避免当前这一步丢失它。 */
+/** 记下注册结果，并清掉 unknown tool 造成的假摩擦。单条失败不影响别的工具。 */
+function markRegistration(drive, sessionId, name, key) {
+  const snapshot = drive.registration.get(key)
+  if (!snapshot) return
+  try {
+    withSession(ROOT(), sessionId, drive.threshold, ({ state, catalog }) => {
+      const spec = catalog.owned?.[name]
+      if (spec) {
+        spec.registeredAt = snapshot.registeredAt
+        spec.registrationError = snapshot.registrationError
+      }
+      if (snapshot.registered) scrubUnknownToolGate(state, name)
+    })
+  } catch {
+    // 记不住时间也不影响已经挂上的工具。
+  }
+}
+
+/** 只挂到这个 agent。schema 没变且仍是这个 agent 时不重复注册。 */
 function bindSession(ctx, drive, agent) {
   const sessionId = drive.sessionOf({ agent })
   const tools = agent?.ctx?.tools
@@ -831,27 +910,46 @@ function bindSession(ctx, drive, agent) {
   const { catalog } = readSession(ROOT(), sessionId, drive.threshold)
   const owned = catalog.owned ?? {}
   const compiled = catalog.compiled ?? {}
-  const alive = new Set([...Object.keys(owned), ...Object.keys(compiled)])
-  for (const [key, bound] of drive.ownedBindings) {
+  const alive = new Set([
+    ...Object.keys(owned).filter((name) => owned[name]?.persist !== true && owned[name]?.persisted !== true),
+    ...Object.keys(compiled),
+  ])
+  for (const [key, bound] of [...drive.ownedBindings]) {
     if (!key.startsWith(`${sessionId}:`)) continue
-    if (alive.has(bound.name) && owned[bound.name]?.persist !== true) continue
-    bound.dispose?.()
+    if (bound.agent === agent && alive.has(bound.name)) continue
+    try { bound.dispose?.() } catch { /* 上一个 agent 的注册已经结束 */ }
     drive.ownedBindings.delete(key)
   }
-  bindShared(ctx, tools, drive)
+  bindShared(ctx, drive)
   for (const spec of Object.values(owned)) {
     const shown = visibleSpec(spec)
-    if (shown?.persist === true || spec.persisted === true) continue
+    if (!shown?.name) continue
+    if (shown.persist === true || spec.persisted === true) {
+      markRegistration(drive, sessionId, shown.name, `shared:${shown.name}`)
+      continue
+    }
     const key = `${sessionId}:${shown.name}`
     const hash = JSON.stringify(ownedCore(shown))
     const bound = drive.ownedBindings.get(key)
-    if (bound?.hash === hash) continue
-    bound?.dispose?.()
-    const dispose = tools.register(defineTool(ownedDefinition(ctx, drive, shown)), {
-      // 工具服务是进程级的。没有 when 时，别的会话也会看到这个 schema。
-      when: ({ agent }) => drive.sessionOf({ agent }) === sessionId,
-    })
-    drive.ownedBindings.set(key, { hash, dispose, name: spec.name })
+    if (bound?.hash === hash && bound.agent === agent) {
+      drive.registration.set(key, { registered: true, registeredAt: bound.registeredAt, registrationError: null })
+      continue
+    }
+    try { bound?.dispose?.() } catch { /* 旧注册已经卸掉 */ }
+    try {
+      const dispose = tools.register(defineTool(ownedDefinition(ctx, drive, shown)), {
+        when: ({ agent: current }) => drive.sessionOf({ agent: current }) === sessionId,
+      })
+      const registeredAt = new Date().toISOString()
+      drive.ownedBindings.set(key, { hash, dispose, name: spec.name, agent, registeredAt })
+      drive.registration.set(key, { registered: true, registeredAt, registrationError: null })
+    } catch (error) {
+      drive.registration.set(key, {
+        registered: false,
+        registeredAt: null,
+        registrationError: error instanceof Error ? error.message : String(error),
+      })
+    }
   }
   for (const spec of Object.values(compiled)) {
     const shown = visibleCompiled(spec)
@@ -859,13 +957,12 @@ function bindSession(ctx, drive, agent) {
     const key = `${sessionId}:${shown.name}`
     const hash = JSON.stringify({ operations: shown.operations, edges: shown.edges })
     const bound = drive.ownedBindings.get(key)
-    if (bound?.hash === hash) continue
-    bound?.dispose?.()
+    if (bound?.hash === hash && bound.agent === agent) continue
+    try { bound?.dispose?.() } catch { /* 旧的 ec_ 注册已经卸掉 */ }
     const dispose = tools.register(defineTool(compiledDefinition(ctx, drive, shown)), {
-      // 同一套工具服务上，别的会话的 when 看不到这个 ec_。
-      when: ({ agent }) => drive.sessionOf({ agent }) === sessionId,
+      when: ({ agent: current }) => drive.sessionOf({ agent: current }) === sessionId,
     })
-    drive.ownedBindings.set(key, { hash, dispose, name: shown.name })
+    drive.ownedBindings.set(key, { hash, dispose, name: shown.name, agent })
   }
   return true
 }
