@@ -16,6 +16,7 @@ description: 摩擦过线后必须处理那一个工具。没过线时不要为�
 - `usage`：新工具怎么用，最多 200 字
 - `schema`：写成 `{ "dir": { "type": "string", "required": true, "description": "目录" } }`。带 `properties` 和 `required` 的 JSON Schema 也可以。可选字段不要写 `required: false`。
 - `run`：`{ "kind": "script", "command": "node --check ${dir}" }`，或直接写命令字符串。`${dir}` 和 `{{dir}}` 会换成带 shell 单引号的值，模板不要再写 `"${dir}"` 或 `'${dir}'`，否则路径里会留下字面引号。环境变量 `$dir` 和 `FD_ARGS` 指向的 JSON 是去掉 shell 引号后的原值。其他工具用 `{ "kind": "delegate", "tool": "原工具名", "overrides": {} }`。脚本最长 4000 字。
+- `persist`：只有 `true` 才跨会话保留。不写则只在当前会话。同意后，以后的会话可以直接调用这个工具，原工具不会因此被拦住。卸掉时会从以后的会话一起移除。重启后不必再走两次审批。
 
 同意之后调用返回的 `patch` 里的工具名，并查看 `friction_status` 返回的 `notes`。`apply_tool_change` 的 `patch_json` 原样使用 `propose_tool_goal` 返回的 `patch`。如果装上的工具还不能完成任务，再对这个工具名调用 `propose_tool_goal`，向用户提出下一步修改。返回里 `voluntary` 为真时，说明用户已经在第一张卡上允许了未过线提案，原工具仍然可以调用。只有摩擦过线后的提案，同意后才会在这个会话里拦住原工具。原工具的定义本身不变。补丁里写 `confirmed` 没有用。
 

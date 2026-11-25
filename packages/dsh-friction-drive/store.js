@@ -23,6 +23,28 @@ export function sessionDir(root, sessionId) {
   return path.join(root, safe)
 }
 
+/** 跨会话工具放在会话目录旁边，不写进任何一个会话里。 */
+export function sharedFile(root) {
+  return path.join(root, 'shared.json')
+}
+
+/** 读取已批准的跨会话工具。文件不存在时不创建。 */
+export function readShared(root) {
+  return readJson(sharedFile(root), { owned: {} })
+}
+
+/** 在单独的锁里修改跨会话目录。不要在会话锁里面调用。 */
+export function withShared(root, mutate) {
+  const dir = path.join(root, '.shared')
+  return withLock(dir, () => {
+    const shared = readJson(sharedFile(root), { owned: {} })
+    shared.owned = shared.owned ?? {}
+    const result = mutate(shared)
+    writeJson(sharedFile(root), shared)
+    return result
+  })
+}
+
 function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }

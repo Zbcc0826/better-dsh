@@ -8,11 +8,11 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { allocateCompiledName, assessCompiledProposal, commitCompiled, compilableView, executeCompiled, ingestCall, installCompiled, interceptMatches, markStepAgent, matureFragments, noteRegisteredBreakpoint, stageCompiledRestore, stageCompiledRevision, visibleCompiled } from './compiler.js'
-import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, canonicalPatch, clearGate, failureOf, gateSkipped, installOwnedRecord, invalidAgainstSchema, normalizeOwnedPatch, ownedCopy, ownedCore, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, semanticOwnedName, truncationOf } from './logic.js'
+import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, canonicalPatch, clearGate, failureOf, gateSkipped, importPersisted, installOwnedRecord, invalidAgainstSchema, normalizeOwnedPatch, ownedCopy, ownedCore, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, persistedRecord, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, semanticOwnedName, truncationOf } from './logic.js'
 import { fillTemplate, presentDelegated, shellQuote } from './owned-runtime.js'
 import { assessCritique, assessLoopOffer, assessPlan, qualityCopy, qualityView } from './quality.js'
 import { schemaError } from './schema.js'
-import { readSession, sessionDir, stateRoot, withSession } from './store.js'
+import { readSession, readShared, sessionDir, stateRoot, withSession, withShared } from './store.js'
 
 const ROOT = stateRoot
 const OWN = new Set(['friction_status', 'propose_tool_goal', 'apply_tool_change', 'restore_tool_definition', 'propose_compiled_procedure', 'propose_quality_loop', 'record_quality_critique', 'record_quality_plan'])
@@ -24,6 +24,7 @@ export function apply(ctx) {
   const drive = {
     registry: new Map(),
     ownedBindings: new Map(),
+    sharedBindings: new Map(),
     agents: new Set(),
     started: new Map(),
     // 还没返回又来了另一次调用时，这两次都算并行，不参与片段。
@@ -103,7 +104,9 @@ export function apply(ctx) {
     async execute(_args, exec) {
       const sessionId = drive.sessionOf(exec)
       if (!sessionId) return JSON.stringify({ ok: false, code: 'SESSION_REQUIRED' })
-      return JSON.stringify(withSession(ROOT(), sessionId, drive.threshold, ({ state, catalog }) => ({
+      return JSON.stringify(withSession(ROOT(), sessionId, drive.threshold, ({ state, catalog }) => {
+        importPersisted(state, catalog, readShared(ROOT()).owned)
+        return {
         ok: true,
         threshold: state.threshold,
         tools: state.tools,
@@ -118,6 +121,7 @@ export function apply(ctx) {
           name,
           spec?.voluntary ? 'voluntary' : 'friction',
         ])),
+        persisted: Object.keys(readShared(ROOT()).owned ?? {}),
         notes: renderNotes(catalog.owned ?? {}),
         compilable: compilableView(matureFragments(state.trace ?? [], fragmentGuards(state))),
         quality: qualityView(catalog.quality),
@@ -131,7 +135,8 @@ export function apply(ctx) {
             failedStep: Boolean(operation.failedStep),
           })),
         })),
-      })))
+        }
+      }))
     },
   }))
 
@@ -232,7 +237,7 @@ export function apply(ctx) {
 
   ctx.tools.register(defineTool({
     name: 'propose_tool_goal',
-    description: '摩擦过线后提出替代或修改。没过线时不要为了绕过门槛造工具。只有用户明确要求时才调用，插件会先请用户确认；不同意就返回 BELOW_THRESHOLD。已登记工具用 projected_calls，公式必须下降。其他工具写 name、problem、usage、schema、run。',
+    description: '摩擦过线后提出替代或修改。没过线时不要为了绕过门槛造工具。只有用户明确要求时才调用，插件会先请用户确认；不同意就返回 BELOW_THRESHOLD。已登记工具用 projected_calls，公式必须下降。其他工具写 name、problem、usage、schema、run。patch 里 persist 为 true 时，同意后工具会留给以后的会话，但不会因此拦住原工具。',
     parameters: {
       tool: { type: 'string', required: true, description: '要改进的工具名。可以是还没过线的工具，也可以是本插件已有的工具。' },
       metric: { type: 'string', required: true, description: '已登记工具只能是 projected_calls。其他工具可省略含义，插件不使用这个值。' },
@@ -244,6 +249,7 @@ export function apply(ctx) {
       const entry = drive.registry.get(args.tool)
       const sessionId = drive.sessionOf(exec)
       if (!sessionId) return JSON.stringify({ ok: false, code: 'SESSION_REQUIRED' })
+      ensurePersisted(drive, sessionId)
       if (readSession(ROOT(), sessionId, drive.threshold).catalog.compiled?.[args.tool]) {
         return JSON.stringify({ ok: false, code: 'COMPILED_NOT_REPLACEABLE' })
       }
@@ -286,7 +292,7 @@ export function apply(ctx) {
         })
         let result = proposeCreate(false)
         if (!result.ok && result.code === 'BELOW_THRESHOLD') {
-          const copy = belowThresholdCopy(args.tool, generated, patch?.problem)
+          const copy = belowThresholdCopy(args.tool, generated, patch?.problem, patch?.persist === true)
           const outcome = await askApproval(ctx, exec, args.tool, copy.zh, copy)
           if (outcome !== 'allowed-once') {
             return JSON.stringify({
@@ -310,7 +316,7 @@ export function apply(ctx) {
         const instruction = result.proposal.kind === 'revise'
           ? `提案已记录。调用 apply_tool_change 修改 ${args.tool}，patch_json 原样使用返回的 patch。同意后下一轮使用新的 schema。如果还不能完成任务，可以再对 ${result.proposal.name} 提出下一步修改。`
           : (result.proposal.voluntary
-            ? `用户已允许在摩擦未过线时提案。调用 apply_tool_change，tool 填 ${args.tool}，patch_json 原样使用返回的 patch。这是第二张审批卡，同意后才会装上 ${result.proposal.name}，${args.tool} 仍可调用。`
+            ? `用户已允许在摩擦未过线时提案。调用 apply_tool_change，tool 填 ${args.tool}，patch_json 原样使用返回的 patch。这是第二张审批卡，同意后才会装上 ${result.proposal.name}，${args.tool} 仍可调用。${result.proposal.persist ? 'persist 为 true，以后的会话也会保留，但不会因此拦住原工具。' : ''}`
             : `提案已记录。调用 apply_tool_change，tool 填 ${args.tool}，patch_json 原样使用返回的 patch。同意后使用 ${result.proposal.name}，这个会话会改走新工具。如果它还不能完成任务，再对 ${result.proposal.name} 调用 propose_tool_goal，向用户提出下一步修改。`)
         return JSON.stringify({ ...result, patch: ownedCore(result.proposal), instruction })
       }
@@ -366,6 +372,7 @@ export function apply(ctx) {
       const entry = drive.registry.get(args.tool)
       const sessionId = drive.sessionOf(exec)
       if (!sessionId) return JSON.stringify({ ok: false, code: 'SESSION_REQUIRED' })
+      ensurePersisted(drive, sessionId)
       let patch
       try {
         patch = normalizeOwnedPatch(JSON.parse(args.patch_json))
@@ -392,15 +399,32 @@ export function apply(ctx) {
         if (!saved.ok) return JSON.stringify(saved)
         try {
           writeNotes(sessionId, saved.owned)
+          if (pending.persist === true && pending.kind === 'create') {
+            withShared(ROOT(), (shared) => {
+              shared.owned[pending.name] = persistedRecord(pending)
+            })
+          }
           if (pending.kind === 'create' && !bindSession(ctx, drive, exec.agent)) throw new Error('工具或技能没有挂上')
         } catch (error) {
           withSession(ROOT(), sessionId, drive.threshold, ({ state, catalog }) => {
             catalog.owned = before.catalog.owned
             state.tools = before.state.tools
           })
+          if (pending.persist === true && pending.kind === 'create') {
+            withShared(ROOT(), (shared) => {
+              delete shared.owned[pending.name]
+            })
+          }
           return JSON.stringify({ ok: false, code: 'NOT_INSTALLED', message: error instanceof Error ? error.message : 'NOT_INSTALLED' })
         }
-        return JSON.stringify({ ok: true, kind: pending.kind, name: pending.name, pending: pending.kind === 'revise', sessionOnly: true })
+        return JSON.stringify({
+          ok: true,
+          kind: pending.kind,
+          name: pending.name,
+          pending: pending.kind === 'revise',
+          persist: pending.persist === true,
+          sessionOnly: pending.persist !== true,
+        })
       }
       if (!entry) return JSON.stringify({ ok: false, code: 'NOT_REGISTERED' })
       if (JSON.stringify(canonicalPatch(patch, entry.patchKeys)) !== JSON.stringify(pending.patch)) {
@@ -432,7 +456,7 @@ export function apply(ctx) {
 
   ctx.tools.register(defineTool({
     name: 'restore_tool_definition',
-    description: '把当前会话里某个已登记工具恢复成初始定义。需要用户在审批卡上同意。不影响其他会话。',
+    description: '把当前会话里某个已登记工具恢复成初始定义。需要用户在审批卡上同意。跨会话保留的工具卸掉后，以后的会话也不再出现。',
     parameters: {
       tool: { type: 'string', required: true, description: '要恢复的工具名' },
     },
@@ -441,6 +465,7 @@ export function apply(ctx) {
       const entry = drive.registry.get(args.tool)
       const sessionId = drive.sessionOf(exec)
       if (!sessionId) return JSON.stringify({ ok: false, code: 'SESSION_REQUIRED' })
+      ensurePersisted(drive, sessionId)
       const snapshot = withSession(ROOT(), sessionId, drive.threshold, ({ state, catalog }) => ({
         adapted: Boolean(state.tools[args.tool]?.successor || state.tools[args.tool]?.owned || catalog.owned?.[args.tool] || catalog.compiled?.[args.tool]),
         compiled: Boolean(catalog.compiled?.[args.tool]),
@@ -614,6 +639,8 @@ function commitSession(ctx, drive, agent) {
   const waiting = Object.values(before.catalog.owned ?? {}).some((spec) => spec.staged || spec.pendingRestore)
     || Object.values(before.catalog.compiled ?? {}).some((spec) => spec.staged || spec.pendingRestore)
   if (waiting) {
+    const remembered = []
+    const forgotten = []
     withSession(ROOT(), sessionId, drive.threshold, ({ state, catalog }) => {
       for (const [name, spec] of Object.entries(catalog.owned ?? {})) {
         if (spec.pendingRestore?.mode === 'delete') {
@@ -621,6 +648,7 @@ function commitSession(ctx, drive, agent) {
           if (state.tools[spec.replaces]) delete state.tools[spec.replaces].successor
           delete state.tools[name]
           if (!spec.voluntary) clearGate(state, spec.replaces)
+          if (spec.persist || spec.persisted) forgotten.push(name)
           continue
         }
         if (spec.pendingRestore?.mode === 'rollback' && spec.previous) {
@@ -629,9 +657,12 @@ function commitSession(ctx, drive, agent) {
             replaces: spec.replaces,
             previous: spec.previous.previous ?? null,
             voluntary: Boolean(spec.previous.voluntary),
+            persisted: spec.previous.persist === true,
           }
           clearGate(state, name)
           if (state.tools[name]) state.tools[name].owned = true
+          if (catalog.owned[name].persist) remembered.push(catalog.owned[name])
+          else if (spec.persist || spec.persisted) forgotten.push(name)
           continue
         }
         if (!spec.staged) continue
@@ -640,12 +671,21 @@ function commitSession(ctx, drive, agent) {
           replaces: spec.replaces,
           previous: spec.previous ?? null,
           voluntary: Boolean(spec.voluntary),
+          persisted: spec.persist === true,
         }
         clearGate(state, name)
         if (state.tools[name]) state.tools[name].owned = true
+        if (catalog.owned[name].persist) remembered.push(catalog.owned[name])
+        else if (spec.persist || spec.persisted || spec.previous?.persist) forgotten.push(name)
       }
       commitCompiled(state, catalog)
     })
+    if (remembered.length > 0 || forgotten.length > 0) {
+      withShared(ROOT(), (shared) => {
+        for (const name of forgotten) delete shared.owned[name]
+        for (const spec of remembered) shared.owned[spec.name] = persistedRecord(spec)
+      })
+    }
     writeNotes(sessionId, readSession(ROOT(), sessionId, drive.threshold).catalog.owned)
   }
   return bindSession(ctx, drive, agent)
@@ -687,6 +727,10 @@ function findProposal(state, tool) {
 function nameTaken(ctx, drive, sessionId, name) {
   if (typeof name !== 'string' || name === '') return false
   if (OWN.has(name) || drive.registry.has(name)) return true
+  if (readShared(ROOT()).owned?.[name]) return true
+  for (const bound of drive.sharedBindings?.values() ?? []) {
+    if (bound.name === name) return true
+  }
   for (const [key, bound] of drive.ownedBindings) {
     if (bound.name === name && !key.startsWith(`${sessionId}:`)) return true
   }
@@ -706,6 +750,9 @@ function restoreReason(state, catalog, name, entry) {
   }
   if (current?.previous) {
     return { zh: `把 ${ownedName} 退回上一版。${replaces} 仍请改用 ${ownedName}。`, en: `Roll ${ownedName} back one version. Keep using ${ownedName} instead of ${replaces}.` }
+  }
+  if (current?.persist) {
+    return { zh: `卸掉 ${ownedName ?? name}，并从以后的会话一起移除。${replaces} 不会被这次恢复拦住。`, en: `Remove ${ownedName ?? name} from later sessions as well. ${replaces} stays callable.` }
   }
   if (current?.voluntary) {
     return { zh: `卸掉主动添加的 ${ownedName ?? name}。${replaces} 本来就可以调用。只影响当前会话。`, en: `Remove the proactive tool ${ownedName ?? name}. ${replaces} stays callable. This session only.` }
@@ -740,23 +787,56 @@ function bindScriptArguments(command, args) {
   }
 }
 
+/** 把跨会话工具抄进当前会话。不写 successor。 */
+function ensurePersisted(drive, sessionId) {
+  const shared = readShared(ROOT()).owned ?? {}
+  if (Object.keys(shared).length === 0) return
+  withSession(ROOT(), sessionId, drive.threshold, ({ state, catalog }) => {
+    importPersisted(state, catalog, shared)
+  })
+}
+
+/** 跨会话工具只注册一次，所有会话都能看见。原工具不会因此被拦住。 */
+function bindShared(ctx, tools, drive) {
+  const shared = readShared(ROOT()).owned ?? {}
+  const alive = new Set(Object.keys(shared))
+  for (const [key, bound] of drive.sharedBindings) {
+    if (alive.has(bound.name)) continue
+    bound.dispose?.()
+    drive.sharedBindings.delete(key)
+  }
+  for (const spec of Object.values(shared)) {
+    if (spec?.persist !== true || !spec.name) continue
+    const key = `shared:${spec.name}`
+    const hash = JSON.stringify(ownedCore(spec))
+    const bound = drive.sharedBindings.get(key)
+    if (bound?.hash === hash) continue
+    bound?.dispose?.()
+    const dispose = tools.register(defineTool(ownedDefinition(ctx, drive, spec)))
+    drive.sharedBindings.set(key, { hash, dispose, name: spec.name })
+  }
+}
+
 /** 只挂到这个 agent。schema 没变就不动已注册的工具，避免当前这一步丢失它。 */
 function bindSession(ctx, drive, agent) {
   const sessionId = drive.sessionOf({ agent })
   const tools = agent?.ctx?.tools
   if (!sessionId || !tools?.register) return false
+  ensurePersisted(drive, sessionId)
   const { catalog } = readSession(ROOT(), sessionId, drive.threshold)
   const owned = catalog.owned ?? {}
   const compiled = catalog.compiled ?? {}
   const alive = new Set([...Object.keys(owned), ...Object.keys(compiled)])
   for (const [key, bound] of drive.ownedBindings) {
     if (!key.startsWith(`${sessionId}:`)) continue
-    if (alive.has(bound.name)) continue
+    if (alive.has(bound.name) && owned[bound.name]?.persist !== true) continue
     bound.dispose?.()
     drive.ownedBindings.delete(key)
   }
+  bindShared(ctx, tools, drive)
   for (const spec of Object.values(owned)) {
     const shown = visibleSpec(spec)
+    if (shown?.persist === true || spec.persisted === true) continue
     const key = `${sessionId}:${shown.name}`
     const hash = JSON.stringify(ownedCore(shown))
     const bound = drive.ownedBindings.get(key)
@@ -809,6 +889,7 @@ function ownedDefinition(ctx, drive, spec) {
       const sessionId = drive.sessionOf(exec)
       if (!sessionId) return { text: '缺少会话', failed: true }
       const record = readSession(ROOT(), sessionId, drive.threshold).catalog.owned?.[spec.name]
+        ?? readShared(ROOT()).owned?.[spec.name]
       const current = visibleSpec(record)
       if (!current?.run) return { text: '这个工具已撤回', failed: true }
       const callId = `${exec.callId}:inner`

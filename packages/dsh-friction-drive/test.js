@@ -6,10 +6,10 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, clearGate, failureOf, freshState, gateSkipped, installOwnedRecord, noteCall, normalizeOwnedPatch, notesDescription, ownedCopy, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, semanticOwnedName, truncationOf } from './logic.js'
+import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, clearGate, failureOf, freshState, gateSkipped, importPersisted, installOwnedRecord, noteCall, normalizeOwnedPatch, notesDescription, ownedCopy, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, persistedRecord, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, semanticOwnedName, truncationOf } from './logic.js'
 import { fillTemplate } from './owned-runtime.js'
 import { schemaError } from './schema.js'
-import { readSession, sessionDir, withSession } from './store.js'
+import { readSession, readShared, sessionDir, withSession, withShared } from './store.js'
 
 const ledgerEntry = {
   formula: 'paged',
@@ -335,6 +335,46 @@ test('插值自带 shell 引号，模板再包一层也不会叠成字面引号'
   const missing = fillTemplate('node --check ${dir}', {})
   assert.equal(missing.ok, false)
   assert.deepEqual(missing.missing, ['dir'])
+})
+
+test('persist 为 true 的工具进入以后的会话，且不拦住原工具', () => {
+  const spec = {
+    name: 'plugin_check',
+    problem: '想先有检查命令',
+    usage: '检查插件目录',
+    schema: { dir: { type: 'string', required: true, description: '目录' } },
+    run: { kind: 'script', command: 'node --check ${dir}' },
+    replaces: 'bash',
+    voluntary: true,
+    persist: true,
+  }
+  const kept = reviseOwned(spec, { ...spec, usage: '改一下用法' })
+  assert.equal(kept.proposal.persist, true)
+  const dropped = reviseOwned(spec, { ...spec, persist: false, usage: '只留在这一会话' })
+  assert.equal(dropped.proposal.persist, false)
+  assert.equal(patchesMatch(spec, { ...spec, persist: false }), false)
+  const dir = mkdtempSync(path.join(tmpdir(), 'friction-persist-'))
+  withShared(dir, (shared) => {
+    shared.owned.plugin_check = persistedRecord(spec)
+  })
+  const imported = withSession(dir, 'next', 8, ({ state, catalog }) => {
+    importPersisted(state, catalog, readShared(dir).owned)
+    return {
+      successor: state.tools.bash?.successor ?? '',
+      persist: catalog.owned.plugin_check.persist,
+      persisted: catalog.owned.plugin_check.persisted,
+    }
+  })
+  assert.equal(imported.successor, '')
+  assert.equal(imported.persist, true)
+  assert.equal(imported.persisted, true)
+  assert.match(renderNotes({ plugin_check: readShared(dir).owned.plugin_check }).toString(), /以后的会话/)
+  withSession(dir, 'local', 8, ({ state, catalog }) => {
+    catalog.owned = { plugin_check: { ...spec, persist: false, persisted: false, problem: '本地版本' } }
+    importPersisted(state, catalog, readShared(dir).owned)
+    assert.equal(catalog.owned.plugin_check.problem, '本地版本')
+  })
+  rmSync(dir, { recursive: true, force: true })
 })
 
 test('读取会话不创建目录', () => {

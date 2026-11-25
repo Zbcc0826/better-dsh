@@ -386,7 +386,7 @@ function canonicalRun(run) {
   return out
 }
 
-/** 比较新工具时忽略审批元数据，只看名称、说明、schema 和执行方式。 */
+/** 比较新工具时忽略审批元数据。persist 只有严格的 true 才跨会话。 */
 export function ownedCore(spec) {
   return {
     name: spec?.name,
@@ -394,6 +394,7 @@ export function ownedCore(spec) {
     usage: spec?.usage,
     schema: spec?.schema,
     run: canonicalRun(spec?.run),
+    persist: spec?.persist === true,
   }
 }
 
@@ -437,6 +438,7 @@ export function normalizeOwnedPatch(patch) {
   if (typeof next.usage === 'string') next.usage = next.usage.trim().slice(0, 200)
   if (next.schema !== undefined) next.schema = authorSchema(next.schema)
   if (typeof next.run === 'string' && next.run.trim() !== '') next.run = { kind: 'script', command: next.run }
+  if (Object.prototype.hasOwnProperty.call(next, 'persist')) next.persist = next.persist === true
   return next
 }
 
@@ -611,10 +613,45 @@ export function proposeOwned(state, input) {
   return { ok: true, proposal }
 }
 
+/** 跨会话保存的那一份。不带 successor，新会话不会拦住原工具。 */
+export function persistedRecord(spec) {
+  return {
+    ...ownedCore({ ...spec, persist: true }),
+    replaces: spec?.replaces,
+    voluntary: Boolean(spec?.voluntary),
+    persist: true,
+    persisted: true,
+    previous: null,
+  }
+}
+
+/**
+ * 把已批准的跨会话工具抄进这个会话。
+ * 本会话自己的同名工具不动。不写 successor。
+ */
+export function importPersisted(state, catalog, sharedOwned) {
+  catalog.owned = catalog.owned ?? {}
+  const imported = []
+  for (const [name, spec] of Object.entries(sharedOwned ?? {})) {
+    if (spec?.persist !== true) continue
+    const current = catalog.owned[name]
+    if (current && current.persisted !== true) continue
+    if (current?.staged || current?.pendingRestore) continue
+    const next = persistedRecord(spec)
+    if (current?.persisted === true && JSON.stringify(stable(ownedCore(current))) === JSON.stringify(stable(ownedCore(next)))) continue
+    catalog.owned[name] = next
+    if (!state.tools[name]) state.tools[name] = freshTool()
+    state.tools[name].owned = true
+    imported.push(name)
+  }
+  return imported
+}
+
 /**
  * 把已批准的新工具写进当前会话。
  * 主动提案不设置 successor，也不清掉原工具已经积累的分数。
  * 摩擦过线后的提案仍记下后继，原工具从此改走新工具。
+ * persist 为 true 时，本会话记下 persisted，避免再按会话注册一次同名工具。
  */
 export function installOwnedRecord(state, catalog, pending) {
   catalog.owned = catalog.owned ?? {}
@@ -625,6 +662,7 @@ export function installOwnedRecord(state, catalog, pending) {
       replaces: pending.replaces,
       previous: null,
       voluntary: Boolean(pending.voluntary),
+      persisted: pending.persist === true,
     }
     if (pending.voluntary) {
       delete state.proposals[pending.tool]
@@ -653,6 +691,7 @@ export function installOwnedRecord(state, catalog, pending) {
     previous: live,
     staged: true,
     voluntary: Boolean(current.voluntary),
+    persisted: current.persisted === true || current.persist === true,
   }
   if (!state.tools[pending.name]) state.tools[pending.name] = freshTool()
   state.tools[pending.name].owned = true
@@ -661,10 +700,11 @@ export function installOwnedRecord(state, catalog, pending) {
   return { ok: true, owned: catalog.owned }
 }
 
-/** 修改已经属于本插件的工具。与当前一版相同则拒绝。 */
+/** 修改已经属于本插件的工具。与当前一版相同则拒绝。没写 persist 时保持原来的跨会话设置。 */
 export function reviseOwned(current, input) {
   const replaces = current.replaces ?? current.run?.tool
-  const spec = { ...ownedCore({ ...current, ...input, name: current.name }), replaces }
+  const persist = Object.prototype.hasOwnProperty.call(input, 'persist') ? input.persist === true : current.persist === true
+  const spec = { ...ownedCore({ ...current, ...input, name: current.name, persist }), replaces }
   const bad = invalidOwned(spec, input.schemaError, input.delegateSchema, input.delegateSchemaMissing)
   if (bad) return { ok: false, code: 'BAD_PATCH', key: bad }
   if (sameOwned(current, spec)) return { ok: false, code: 'SAME_REVISION' }
@@ -678,10 +718,12 @@ export function runBrief(run) {
 }
 
 /** 摩擦未过线时的第一张确认卡。同意只允许提案，装上工具仍要第二张卡。 */
-export function belowThresholdCopy(tool, name, problem) {
+export function belowThresholdCopy(tool, name, problem, persist = false) {
   const brief = String(problem ?? '').slice(0, 40)
-  const zh = `${tool} 的摩擦还没过线，重启后计数会清零。是否允许先提出 ${name}？问题：${brief}。同意只表示可以提案，装上还要再批一次。原工具不会被拦住。`
-  const en = `${tool} has not crossed the friction threshold, and a restart clears the count. Allow proposing ${name} first? Problem: ${brief}. This approval only allows the proposal. Installing it needs a second approval. The original tool stays callable.`
+  const memory = persist ? '允许后若再同意装上，以后的会话也会保留，但不会因此拦住原工具。' : ''
+  const memoryEn = persist ? ' If it is installed afterward, later sessions keep it, without blocking the original tool.' : ''
+  const zh = `${tool} 的摩擦还没过线，重启后计数会清零。是否允许先提出 ${name}？问题：${brief}。同意只表示可以提案，装上还要再批一次。原工具不会被拦住。${memory}`
+  const en = `${tool} has not crossed the friction threshold, and a restart clears the count. Allow proposing ${name} first? Problem: ${brief}. This approval only allows the proposal. Installing it needs a second approval. The original tool stays callable.${memoryEn}`
   return { zh, en }
 }
 
@@ -694,8 +736,10 @@ export function ownedCopy(proposal) {
   const scopeEn = proposal.kind === 'revise'
     ? ''
     : (proposal.voluntary ? ' This is proactive; the original tool stays callable.' : ' Friction has crossed the threshold; use the new tool after approval.')
-  const zh = `允许${action}本会话工具 ${proposal.name}。${runBrief(proposal.run)}。问题：${problem}。${scope}`
-  const en = `Allow ${proposal.kind === 'revise' ? 'revising' : 'adding'} session tool ${proposal.name}. ${runBrief(proposal.run)}. Problem: ${problem}.${scopeEn}`
+  const memory = proposal.persist ? '以后的会话也会保留这个工具，但不会因此拦住原工具。' : ''
+  const memoryEn = proposal.persist ? ' Later sessions keep this tool. The original tool is not blocked there.' : ''
+  const zh = `允许${action}本会话工具 ${proposal.name}。${runBrief(proposal.run)}。问题：${problem}。${scope}${memory}`
+  const en = `Allow ${proposal.kind === 'revise' ? 'revising' : 'adding'} session tool ${proposal.name}. ${runBrief(proposal.run)}. Problem: ${problem}.${scopeEn}${memoryEn}`
   return { zh, en }
 }
 
@@ -722,9 +766,10 @@ export function renderNotes(owned) {
     const run = shown.run?.kind === 'script'
       ? `脚本：${shown.run.command}`
       : `调用 ${shown.run?.tool}。强制字段：${JSON.stringify(shown.run?.overrides ?? {})}。`
+    const kept = shown.persist ? '以后的会话也会保留。新会话里原工具不会被拦住。' : ''
     const relation = shown.voluntary
-      ? `来源：用户主动要求（voluntary）。${shown.replaces} 仍可调用。`
-      : `来源：摩擦过线（friction）。代替 ${shown.replaces}。`
+      ? `来源：用户主动要求（voluntary）。${shown.replaces} 仍可调用。${kept}`
+      : `来源：摩擦过线（friction）。代替 ${shown.replaces}。${kept}`
     const quoting = shown.run?.kind === 'script'
       ? '插值：写成 node --check ${dir}。插件会把值换成带 shell 单引号的参数，模板不要再写 "${dir}" 或 \'${dir}\'。'
       : ''
