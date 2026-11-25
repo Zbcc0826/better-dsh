@@ -138,19 +138,29 @@ export function invalidPatch(patch, entry) {
 
 /**
  * 只接受 projected_calls。目标次数以公式预览为准，不采用模型自己写的目标。
+ * 没过线时默认 BELOW_THRESHOLD。插件在用户确认后才传入 confirmed。
+ * 公式没有下降仍然拒绝。同一份已确认提案再交一次，不再要求确认。
  */
 export function propose(state, input, entry, spec) {
   const tool = state.tools[input.tool]
-  if (!tool?.gated) return { ok: false, code: 'BELOW_THRESHOLD' }
+  const voluntary = !tool?.gated
   if (input.metric !== 'projected_calls') return { ok: false, code: 'METRIC_NOT_RETESTABLE' }
-  const before = projectedCalls(spec, entry, tool.workloadItems)
+  const before = projectedCalls(spec, entry, tool?.workloadItems)
   if (!before.ok) return { ok: false, code: before.code }
   const bad = invalidPatch(input.patch, entry)
   if (bad) return { ok: false, code: 'BAD_PATCH', key: bad }
   const next = { ...spec, ...canonicalPatch(input.patch, entry.patchKeys) }
-  const after = projectedCalls(next, entry, tool.workloadItems)
+  const after = projectedCalls(next, entry, tool?.workloadItems)
   if (!after.ok) return { ok: false, code: after.code }
   if (!(after.calls < before.calls)) return { ok: false, code: 'NOT_LOWER', current: before.calls, after: after.calls }
+  if (voluntary && input.confirmed !== true) {
+    const patch = canonicalPatch(input.patch, entry.patchKeys)
+    const existing = state.proposals[input.tool]
+    if (existing?.voluntary && JSON.stringify(existing.patch) === JSON.stringify(patch)) {
+      return { ok: true, proposal: existing }
+    }
+    return { ok: false, code: 'BELOW_THRESHOLD', confirm: 'required' }
+  }
   const proposal = {
     id: input.id,
     tool: input.tool,
@@ -160,6 +170,7 @@ export function propose(state, input, entry, spec) {
     patch: canonicalPatch(input.patch, entry.patchKeys),
     before,
     after,
+    voluntary,
   }
   state.proposals[input.tool] = proposal
   return { ok: true, proposal }
@@ -235,12 +246,19 @@ export function commandFailed(text) {
  * @param {object} stats 该工具的失败、重试、截断和分数
  */
 export function approvalCopy(proposal, stats) {
+  const row = stats ?? { failures: 0, retries: 0, partials: 0, score: 0 }
   const change = describePatch(proposal.patch, 'zh')
   const changeEn = describePatch(proposal.patch, 'en')
   const still = proposal.after.warmup ? '改完后首次调用仍会失败。' : ''
   const stillEn = proposal.after.warmup ? ' The first call will still fail after the change.' : ''
-  const zh = `这个会话里 ${proposal.tool} 失败 ${stats.failures} 次、同参数重试 ${stats.retries} 次、结果被截断 ${stats.partials} 次，摩擦分 ${stats.score}。按本会话最近一次要处理的 ${proposal.before.items} 条计算，现在预计调用 ${proposal.before.calls} 次${warmupClause(proposal.before, 'zh')}。请允许修改 ${proposal.tool}：${change}。改完后预计调用 ${proposal.after.calls} 次${warmupClause(proposal.after, 'zh')}。${still}这次同意只改当前会话；复查没有下降不会写入。`
-  const en = `In this session ${proposal.tool} failed ${stats.failures} times, retried the same arguments ${stats.retries} times, and returned truncated results ${stats.partials} times. Friction score: ${stats.score}. For the latest workload of ${proposal.before.items} items, this takes ${proposal.before.calls} calls${warmupClause(proposal.before, 'en')}. Allow changing ${proposal.tool}: ${changeEn}. Afterward it takes ${proposal.after.calls} calls${warmupClause(proposal.after, 'en')}.${stillEn} This approval changes only the current session. The change is not saved unless the projected calls decrease.`
+  const head = proposal.voluntary
+    ? `这是主动提案，${proposal.tool} 尚未因为摩擦过线。`
+    : `这个会话里 ${proposal.tool} 失败 ${row.failures} 次、同参数重试 ${row.retries} 次、结果被截断 ${row.partials} 次，摩擦分 ${row.score}。`
+  const headEn = proposal.voluntary
+    ? `This is a proactive proposal. ${proposal.tool} has not crossed the friction threshold. `
+    : `In this session ${proposal.tool} failed ${row.failures} times, retried the same arguments ${row.retries} times, and returned truncated results ${row.partials} times. Friction score: ${row.score}. `
+  const zh = `${head}按本会话最近一次要处理的 ${proposal.before.items} 条计算，现在预计调用 ${proposal.before.calls} 次${warmupClause(proposal.before, 'zh')}。请允许修改 ${proposal.tool}：${change}。改完后预计调用 ${proposal.after.calls} 次${warmupClause(proposal.after, 'zh')}。${still}这次同意只改当前会话；复查没有下降不会写入。`
+  const en = `${headEn}For the latest workload of ${proposal.before.items} items, this takes ${proposal.before.calls} calls${warmupClause(proposal.before, 'en')}. Allow changing ${proposal.tool}: ${changeEn}. Afterward it takes ${proposal.after.calls} calls${warmupClause(proposal.after, 'en')}.${stillEn} This approval changes only the current session. The change is not saved unless the projected calls decrease.`
   return { zh, en }
 }
 
@@ -276,18 +294,21 @@ export function canonicalAdaptation(patch) {
   return out
 }
 
-/** 正在使用的工具过线后，提案只保存参数改法。目标次数无法事先测算。 */
+/** 未登记工具的参数套用。没过线且未经确认时拒绝，避免为了绕过门槛造工具。 */
 export function proposeAdaptation(state, input) {
   const tool = state.tools[input.tool]
-  if (!tool?.gated) return { ok: false, code: 'BELOW_THRESHOLD' }
   const bad = invalidAdaptation(input.patch)
   if (bad) return { ok: false, code: 'BAD_PATCH', key: bad, patchKeys: ['defaults', 'overrides'] }
+  if (!tool?.gated && input.confirmed !== true) {
+    return { ok: false, code: 'BELOW_THRESHOLD', confirm: 'required' }
+  }
   const proposal = {
     id: input.id,
     tool: input.tool,
     kind: 'adaptation',
     metric: 'failures',
-    current: tool.failures,
+    current: tool?.failures ?? 0,
+    voluntary: !tool?.gated,
     patch: canonicalAdaptation(input.patch),
     fixTool: fixName(input.tool),
   }
@@ -557,17 +578,87 @@ function invalidOwned(spec, schemaError, delegateSchema, delegateSchemaMissing) 
   return null
 }
 
-/** 原工具过线后，提案一个属于本插件的新工具，不改原工具定义。 */
+/**
+ * 提案一个属于本插件的新工具，不改原工具定义。
+ * 没过线时返回 BELOW_THRESHOLD，除非这次调用带有插件写入的 confirmed。
+ * 补丁里的 confirmed 不算数，调用方必须在用户点允许之后再传。
+ * voluntary 为真时，装上后不写 successor，原工具继续可调用。
+ * 已经有后继时仍拒绝，应改那个后继工具。
+ */
 export function proposeOwned(state, input) {
   const tool = state.tools[input.tool]
-  if (!tool?.gated) return { ok: false, code: 'BELOW_THRESHOLD' }
-  if (tool.successor) return { ok: false, code: 'HAS_SUCCESSOR', successor: tool.successor }
+  if (tool?.successor) return { ok: false, code: 'HAS_SUCCESSOR', successor: tool.successor }
   const spec = { ...ownedCore(input), replaces: input.tool }
   const bad = invalidOwned(spec, input.schemaError, input.delegateSchema, input.delegateSchemaMissing)
   if (bad) return { ok: false, code: 'BAD_PATCH', key: bad }
-  const proposal = { id: input.id, tool: input.tool, kind: 'create', replaces: input.tool, ...ownedCore(spec) }
+  const voluntary = !tool?.gated
+  if (voluntary && input.confirmed !== true) {
+    const existing = state.proposals[input.tool]
+    if (existing?.kind === 'create' && existing.voluntary && patchesMatch(existing, spec)) {
+      return { ok: true, proposal: existing }
+    }
+    return { ok: false, code: 'BELOW_THRESHOLD', confirm: 'required' }
+  }
+  const proposal = {
+    id: input.id,
+    tool: input.tool,
+    kind: 'create',
+    replaces: input.tool,
+    voluntary: !tool?.gated,
+    ...ownedCore(spec),
+  }
   state.proposals[input.tool] = proposal
   return { ok: true, proposal }
+}
+
+/**
+ * 把已批准的新工具写进当前会话。
+ * 主动提案不设置 successor，也不清掉原工具已经积累的分数。
+ * 摩擦过线后的提案仍记下后继，原工具从此改走新工具。
+ */
+export function installOwnedRecord(state, catalog, pending) {
+  catalog.owned = catalog.owned ?? {}
+  if (pending.kind === 'create') {
+    if (catalog.owned[pending.name]) return { ok: false, code: 'NAME_TAKEN' }
+    catalog.owned[pending.name] = {
+      ...ownedCore(pending),
+      replaces: pending.replaces,
+      previous: null,
+      voluntary: Boolean(pending.voluntary),
+    }
+    if (pending.voluntary) {
+      delete state.proposals[pending.tool]
+    } else {
+      if (!state.tools[pending.replaces]) state.tools[pending.replaces] = freshTool()
+      clearGate(state, pending.replaces)
+      state.tools[pending.replaces].successor = pending.name
+    }
+    if (!state.tools[pending.name]) state.tools[pending.name] = freshTool()
+    state.tools[pending.name].owned = true
+    return { ok: true, owned: catalog.owned }
+  }
+  const current = catalog.owned[pending.name]
+  if (!current) return { ok: false, code: 'NOT_ADAPTED' }
+  const live = current.staged && current.previous
+    ? current.previous
+    : {
+        ...ownedCore(current),
+        replaces: current.replaces,
+        previous: current.previous ?? null,
+        voluntary: Boolean(current.voluntary),
+      }
+  catalog.owned[pending.name] = {
+    ...ownedCore(pending),
+    replaces: current.replaces,
+    previous: live,
+    staged: true,
+    voluntary: Boolean(current.voluntary),
+  }
+  if (!state.tools[pending.name]) state.tools[pending.name] = freshTool()
+  state.tools[pending.name].owned = true
+  delete state.proposals[pending.name]
+  delete state.proposals[pending.tool]
+  return { ok: true, owned: catalog.owned }
 }
 
 /** 修改已经属于本插件的工具。与当前一版相同则拒绝。 */
@@ -586,11 +677,25 @@ export function runBrief(run) {
   return `调用 ${run?.tool ?? ''}，覆盖 ${JSON.stringify(run?.overrides ?? {})}`
 }
 
+/** 摩擦未过线时的第一张确认卡。同意只允许提案，装上工具仍要第二张卡。 */
+export function belowThresholdCopy(tool, name, problem) {
+  const brief = String(problem ?? '').slice(0, 40)
+  const zh = `${tool} 的摩擦还没过线，重启后计数会清零。是否允许先提出 ${name}？问题：${brief}。同意只表示可以提案，装上还要再批一次。原工具不会被拦住。`
+  const en = `${tool} has not crossed the friction threshold, and a restart clears the count. Allow proposing ${name} first? Problem: ${brief}. This approval only allows the proposal. Installing it needs a second approval. The original tool stays callable.`
+  return { zh, en }
+}
+
 export function ownedCopy(proposal) {
   const problem = String(proposal.problem ?? '').slice(0, 40)
   const action = proposal.kind === 'revise' ? '修改' : '增加'
-  const zh = `允许${action}本会话工具 ${proposal.name}。${runBrief(proposal.run)}。问题：${problem}。`
-  const en = `Allow ${proposal.kind === 'revise' ? 'revising' : 'adding'} session tool ${proposal.name}. ${runBrief(proposal.run)}. Problem: ${problem}.`
+  const scope = proposal.kind === 'revise'
+    ? ''
+    : (proposal.voluntary ? '这是主动提案，原工具仍可调用。' : '摩擦已过线，同意后请改用新工具。')
+  const scopeEn = proposal.kind === 'revise'
+    ? ''
+    : (proposal.voluntary ? ' This is proactive; the original tool stays callable.' : ' Friction has crossed the threshold; use the new tool after approval.')
+  const zh = `允许${action}本会话工具 ${proposal.name}。${runBrief(proposal.run)}。问题：${problem}。${scope}`
+  const en = `Allow ${proposal.kind === 'revise' ? 'revising' : 'adding'} session tool ${proposal.name}. ${runBrief(proposal.run)}. Problem: ${problem}.${scopeEn}`
   return { zh, en }
 }
 
@@ -617,7 +722,8 @@ export function renderNotes(owned) {
     const run = shown.run?.kind === 'script'
       ? `脚本：${shown.run.command}`
       : `调用 ${shown.run?.tool}。强制字段：${JSON.stringify(shown.run?.overrides ?? {})}。`
-    return [`## ${shown.name}`, `代替 ${shown.replaces}。`, `问题：${shown.problem}`, `用法：${shown.usage}`, '参数：', describeSchema(shown.schema), run].join('\n')
+    const relation = shown.voluntary ? `主动增加，${shown.replaces} 仍可调用。` : `代替 ${shown.replaces}。`
+    return [`## ${shown.name}`, relation, `问题：${shown.problem}`, `用法：${shown.usage}`, '参数：', describeSchema(shown.schema), run].join('\n')
   })
   return ['# 本会话的替代工具', ...blocks].join('\n\n')
 }

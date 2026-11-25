@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { admit, applyAdaptation, approvalCopy, clearGate, failureOf, freshState, gateSkipped, noteCall, normalizeOwnedPatch, notesDescription, ownedCopy, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, semanticOwnedName, truncationOf } from './logic.js'
+import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, clearGate, failureOf, freshState, gateSkipped, installOwnedRecord, noteCall, normalizeOwnedPatch, notesDescription, ownedCopy, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, semanticOwnedName, truncationOf } from './logic.js'
 import { schemaError } from './schema.js'
 import { readSession, sessionDir, withSession } from './store.js'
 
@@ -257,6 +257,66 @@ test('JSON Schema 和命令字符串会被收成可安装的提案', () => {
   const example = ownedPatchExample()
   assert.equal(example.usage.length <= 200, true)
   assert.equal(example.run.command.includes('${dir}'), true)
+})
+
+test('没过线直接造工具会被拒绝，用户确认后才记录提案', () => {
+  const state = freshState(8)
+  const spec = {
+    name: 'plugin_check',
+    problem: '想先有检查命令',
+    usage: '检查插件目录',
+    schema: { dir: { type: 'string', required: true, description: '目录' } },
+    run: { kind: 'script', command: 'node --check ${dir}' },
+  }
+  const denied = proposeOwned(state, { id: 'p', tool: 'bash', ...spec, confirmed: 'true' })
+  assert.equal(denied.code, 'BELOW_THRESHOLD')
+  assert.equal(denied.confirm, 'required')
+  assert.equal(state.proposals.bash, undefined)
+  const fromPatch = proposeOwned(state, { id: 'p', tool: 'bash', ...spec })
+  assert.equal(fromPatch.code, 'BELOW_THRESHOLD')
+  const created = proposeOwned(state, { id: 'p', tool: 'bash', ...spec, confirmed: true })
+  assert.equal(created.ok, true)
+  assert.equal(created.proposal.voluntary, true)
+  assert.equal(state.tools.bash, undefined)
+  const again = proposeOwned(state, { id: 'p2', tool: 'bash', ...spec })
+  assert.equal(again.ok, true)
+  assert.equal(again.proposal, created.proposal)
+  const catalog = {}
+  const saved = installOwnedRecord(state, catalog, created.proposal)
+  assert.equal(saved.ok, true)
+  assert.equal(state.tools.bash, undefined)
+  assert.equal(state.proposals.bash, undefined)
+  assert.equal(catalog.owned.plugin_check.voluntary, true)
+  assert.match(renderNotes(catalog.owned), /仍可调用/)
+  assert.match(ownedCopy(created.proposal).zh, /主动提案/)
+  const card = belowThresholdCopy('bash', 'plugin_check', spec.problem)
+  assert.equal(card.zh.includes('\n'), false)
+  assert.match(card.zh, /还要再批一次/)
+  const gatedState = freshState(8)
+  gatedState.tools.bash = { gated: true, successor: '', score: 9 }
+  const gated = proposeOwned(gatedState, { id: 'p2', tool: 'bash', ...spec })
+  assert.equal(gated.proposal.voluntary, false)
+  installOwnedRecord(gatedState, {}, gated.proposal)
+  assert.equal(gatedState.tools.bash.successor, 'plugin_check')
+  assert.equal(gatedState.tools.bash.gated, false)
+  assert.equal(gatedState.tools.bash.score, 0)
+  const idle = freshState(8)
+  const earlyBlocked = propose(idle, {
+    tool: 'ledger',
+    metric: 'projected_calls',
+    patch: { pageSize: 8, warmupError: false },
+  }, ledgerEntry, ledgerSpec)
+  assert.equal(earlyBlocked.code, 'BELOW_THRESHOLD')
+  assert.equal(idle.proposals.ledger, undefined)
+  const early = propose(idle, {
+    tool: 'ledger',
+    metric: 'projected_calls',
+    patch: { pageSize: 8, warmupError: false },
+    confirmed: true,
+  }, ledgerEntry, ledgerSpec)
+  assert.equal(early.ok, true)
+  assert.equal(early.proposal.voluntary, true)
+  assert.match(approvalCopy(early.proposal, undefined).zh, /主动提案/)
 })
 
 test('读取会话不创建目录', () => {

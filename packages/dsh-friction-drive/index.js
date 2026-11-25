@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { allocateCompiledName, assessCompiledProposal, commitCompiled, compilableView, executeCompiled, ingestCall, installCompiled, interceptMatches, markStepAgent, matureFragments, noteRegisteredBreakpoint, stageCompiledRestore, stageCompiledRevision, visibleCompiled } from './compiler.js'
-import { admit, applyAdaptation, approvalCopy, canonicalPatch, clearGate, failureOf, freshTool, gateSkipped, invalidAgainstSchema, normalizeOwnedPatch, ownedCopy, ownedCore, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, semanticOwnedName, truncationOf } from './logic.js'
+import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, canonicalPatch, clearGate, failureOf, gateSkipped, installOwnedRecord, invalidAgainstSchema, normalizeOwnedPatch, ownedCopy, ownedCore, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, semanticOwnedName, truncationOf } from './logic.js'
 import { fillTemplate, presentDelegated, shellQuote } from './owned-runtime.js'
 import { assessCritique, assessLoopOffer, assessPlan, qualityCopy, qualityView } from './quality.js'
 import { schemaError } from './schema.js'
@@ -228,9 +228,9 @@ export function apply(ctx) {
 
   ctx.tools.register(defineTool({
     name: 'propose_tool_goal',
-    description: '某个工具过线后提出下一步。已登记工具用 projected_calls 和登记字段。其他工具写 name、problem、usage、schema、run，新增或修改本插件的工具。',
+    description: '摩擦过线后提出替代或修改。没过线时不要为了绕过门槛造工具。只有用户明确要求时才调用，插件会先请用户确认；不同意就返回 BELOW_THRESHOLD。已登记工具用 projected_calls，公式必须下降。其他工具写 name、problem、usage、schema、run。',
     parameters: {
-      tool: { type: 'string', required: true, description: '过线的工具名' },
+      tool: { type: 'string', required: true, description: '要改进的工具名。可以是还没过线的工具，也可以是本插件已有的工具。' },
       metric: { type: 'string', required: true, description: '已登记工具只能是 projected_calls。其他工具可省略含义，插件不使用这个值。' },
       target: { type: 'number', description: '可省略。已登记工具会改成公式算出的次数。' },
       patch_json: { type: 'string', required: true, description: '已登记工具用 pageSize 等登记字段。其他工具写 name、problem、usage、schema、run，用来新增或修改本插件的工具。' },
@@ -249,6 +249,8 @@ export function apply(ctx) {
       } catch {
         return JSON.stringify({ ok: false, code: 'BAD_PATCH', hint: ownedPatchHint('schema') })
       }
+      // 补丁里的 confirmed 不能当成用户已经点了允许。只有审批卡能打开这扇门。
+      if (patch && typeof patch === 'object') delete patch.confirmed
       if (!entry) {
         const checked = schemaError(patch?.schema)
         const currentOwned = readSession(ROOT(), sessionId, drive.threshold).catalog.owned?.[args.tool]
@@ -259,7 +261,7 @@ export function apply(ctx) {
         if (!currentOwned && nameTaken(ctx, drive, sessionId, generated)) {
           return JSON.stringify({ ok: false, code: 'NAME_TAKEN', name: generated })
         }
-        const result = withSession(ROOT(), sessionId, drive.threshold, ({ state, catalog }) => {
+        const proposeCreate = (confirmed) => withSession(ROOT(), sessionId, drive.threshold, ({ state, catalog }) => {
           const current = catalog.owned?.[args.tool]
           if (current) {
             const revised = reviseOwned(current, { ...patch, schemaError: checked, delegateSchema, delegateSchemaMissing })
@@ -275,8 +277,24 @@ export function apply(ctx) {
             schemaError: checked,
             delegateSchema,
             delegateSchemaMissing,
+            confirmed,
           })
         })
+        let result = proposeCreate(false)
+        if (!result.ok && result.code === 'BELOW_THRESHOLD') {
+          const copy = belowThresholdCopy(args.tool, generated, patch?.problem)
+          const outcome = await askApproval(ctx, exec, args.tool, copy.zh, copy)
+          if (outcome !== 'allowed-once') {
+            return JSON.stringify({
+              ok: false,
+              code: 'BELOW_THRESHOLD',
+              confirm: 'required',
+              outcome: outcome ?? 'unavailable',
+              hint: '摩擦还没过线，用户没有允许造工具。不要换一份补丁再试，也不要故意制造失败来过线。',
+            })
+          }
+          result = proposeCreate(true)
+        }
         if (!result.ok) {
           return JSON.stringify({
             ...result,
@@ -287,18 +305,36 @@ export function apply(ctx) {
         }
         const instruction = result.proposal.kind === 'revise'
           ? `提案已记录。调用 apply_tool_change 修改 ${args.tool}，patch_json 原样使用返回的 patch。同意后下一轮使用新的 schema。如果还不能完成任务，可以再对 ${result.proposal.name} 提出下一步修改。`
-          : `提案已记录。调用 apply_tool_change，tool 填 ${args.tool}，patch_json 原样使用返回的 patch。同意后使用 ${result.proposal.name}。如果它还不能完成任务，再对 ${result.proposal.name} 调用 propose_tool_goal，向用户提出下一步修改。`
+          : (result.proposal.voluntary
+            ? `用户已允许在摩擦未过线时提案。调用 apply_tool_change，tool 填 ${args.tool}，patch_json 原样使用返回的 patch。这是第二张审批卡，同意后才会装上 ${result.proposal.name}，${args.tool} 仍可调用。`
+            : `提案已记录。调用 apply_tool_change，tool 填 ${args.tool}，patch_json 原样使用返回的 patch。同意后使用 ${result.proposal.name}，这个会话会改走新工具。如果它还不能完成任务，再对 ${result.proposal.name} 调用 propose_tool_goal，向用户提出下一步修改。`)
         return JSON.stringify({ ...result, patch: ownedCore(result.proposal), instruction })
       }
-      const result = withSession(ROOT(), sessionId, drive.threshold, ({ state, catalog }) => {
+      const proposeRegistered = (confirmed) => withSession(ROOT(), sessionId, drive.threshold, ({ state, catalog }) => {
         ensureSeed(catalog, entry)
         return propose(state, {
           id: `p-${Date.now()}`,
           tool: args.tool,
           metric: args.metric,
           patch,
+          confirmed,
         }, entry, catalog.tools[args.tool])
       })
+      let result = proposeRegistered(false)
+      if (!result.ok && result.code === 'BELOW_THRESHOLD') {
+        const copy = belowThresholdCopy(args.tool, args.tool, '')
+        const outcome = await askApproval(ctx, exec, args.tool, copy.zh, copy)
+        if (outcome !== 'allowed-once') {
+          return JSON.stringify({
+            ok: false,
+            code: 'BELOW_THRESHOLD',
+            confirm: 'required',
+            outcome: outcome ?? 'unavailable',
+            hint: '摩擦还没过线，用户没有允许改这个工具。不要换一份补丁再试，也不要故意制造失败来过线。',
+          })
+        }
+        result = proposeRegistered(true)
+      }
       if (!result.ok) {
         if (result.code === 'BAD_PATCH') {
           return JSON.stringify({ ...result, patchKeys: entry.patchKeys, engines: entry.engines })
@@ -307,7 +343,9 @@ export function apply(ctx) {
       }
       return JSON.stringify({
         ...result,
-        instruction: '提案已记录。调用 apply_tool_change，补丁必须一致。审批卡上的数字由插件计算，不要向用户索要口令。',
+        instruction: result.proposal.voluntary
+          ? '用户已允许在摩擦未过线时提案。调用 apply_tool_change，补丁必须一致。这是第二张审批卡，同意后才会改工具。'
+          : '提案已记录。调用 apply_tool_change，补丁必须一致。审批卡上的数字由插件计算，不要向用户索要口令。',
       })
     },
   }))
@@ -365,6 +403,7 @@ export function apply(ctx) {
         return JSON.stringify({ ok: false, code: 'PATCH_MISMATCH' })
       }
       const stats = withSession(ROOT(), sessionId, drive.threshold, ({ state }) => state.tools[args.tool])
+        ?? { failures: 0, retries: 0, partials: 0, score: 0 }
       const copy = approvalCopy(pending, stats)
       const outcome = await askApproval(ctx, exec, args.tool, copy.zh, copy)
       const allowed = admit(pending, patch, outcome, entry.patchKeys)
@@ -536,31 +575,7 @@ function watchTools(ctx, drive) {
   })
 }
 
-/** 把提案写进当前会话。原工具只记下后继名字。 */
-function installOwnedRecord(state, catalog, pending) {
-  catalog.owned = catalog.owned ?? {}
-  if (pending.kind === 'create') {
-    if (catalog.owned[pending.name]) return { ok: false, code: 'NAME_TAKEN' }
-    catalog.owned[pending.name] = { ...ownedCore(pending), replaces: pending.replaces, previous: null }
-    if (!state.tools[pending.replaces]) state.tools[pending.replaces] = freshTool()
-    clearGate(state, pending.replaces)
-    state.tools[pending.replaces].successor = pending.name
-    state.tools[pending.name] = freshTool()
-    state.tools[pending.name].owned = true
-  } else {
-    const current = catalog.owned[pending.name]
-    if (!current) return { ok: false, code: 'NOT_ADAPTED' }
-    const live = current.staged && current.previous
-      ? current.previous
-      : { ...ownedCore(current), replaces: current.replaces, previous: current.previous ?? null }
-    catalog.owned[pending.name] = { ...ownedCore(pending), replaces: current.replaces, previous: live, staged: true }
-    if (!state.tools[pending.name]) state.tools[pending.name] = freshTool()
-    state.tools[pending.name].owned = true
-  }
-  return { ok: true, owned: catalog.owned }
-}
-
-/** 恢复上一版。没有上一版时卸掉新工具，原工具重新可以调用。 */
+/** 恢复上一版。没有上一版时卸掉新工具。主动添加的工具卸掉后，不清原工具已经积累的分数。 */
 function restoreOwned(state, catalog, name, entry) {
   catalog.owned = catalog.owned ?? {}
   if (entry) catalog.tools[name] = structuredClone(entry.seed)
@@ -571,6 +586,7 @@ function restoreOwned(state, catalog, name, entry) {
       ...ownedCore(current.previous),
       replaces: current.replaces,
       previous: current.previous.previous ?? null,
+      voluntary: Boolean(current.previous.voluntary),
     }
   } else if (current?.previous) {
     catalog.owned[ownedName] = { ...current, pendingRestore: { mode: 'rollback' } }
@@ -600,7 +616,7 @@ function commitSession(ctx, drive, agent) {
           delete catalog.owned[name]
           if (state.tools[spec.replaces]) delete state.tools[spec.replaces].successor
           delete state.tools[name]
-          clearGate(state, spec.replaces)
+          if (!spec.voluntary) clearGate(state, spec.replaces)
           continue
         }
         if (spec.pendingRestore?.mode === 'rollback' && spec.previous) {
@@ -608,13 +624,19 @@ function commitSession(ctx, drive, agent) {
             ...ownedCore(spec.previous),
             replaces: spec.replaces,
             previous: spec.previous.previous ?? null,
+            voluntary: Boolean(spec.previous.voluntary),
           }
           clearGate(state, name)
           if (state.tools[name]) state.tools[name].owned = true
           continue
         }
         if (!spec.staged) continue
-        catalog.owned[name] = { ...ownedCore(spec), replaces: spec.replaces, previous: spec.previous ?? null }
+        catalog.owned[name] = {
+          ...ownedCore(spec),
+          replaces: spec.replaces,
+          previous: spec.previous ?? null,
+          voluntary: Boolean(spec.voluntary),
+        }
         clearGate(state, name)
         if (state.tools[name]) state.tools[name].owned = true
       }
@@ -680,6 +702,9 @@ function restoreReason(state, catalog, name, entry) {
   }
   if (current?.previous) {
     return { zh: `把 ${ownedName} 退回上一版。${replaces} 仍请改用 ${ownedName}。`, en: `Roll ${ownedName} back one version. Keep using ${ownedName} instead of ${replaces}.` }
+  }
+  if (current?.voluntary) {
+    return { zh: `卸掉主动添加的 ${ownedName ?? name}。${replaces} 本来就可以调用。只影响当前会话。`, en: `Remove the proactive tool ${ownedName ?? name}. ${replaces} stays callable. This session only.` }
   }
   return { zh: `卸掉 ${ownedName ?? name}，并重新允许直接调用 ${replaces}。只影响当前会话。`, en: `Remove ${ownedName ?? name} and allow direct calls to ${replaces} again in this session.` }
 }

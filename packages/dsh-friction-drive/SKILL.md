@@ -1,15 +1,15 @@
 ---
 name: friction-drive
-description: 某个正在使用的工具过线后必须使用。已登记工具改它自己的字段。其他工具改为新增或修改本插件的工具，并查看 friction_status 的 notes。反复成功的片段见 compilable，调用 propose_compiled_procedure 前先看候选 asset_id。复杂任务先看 friction_status.quality，未同意不要开始找茬流程。
+description: 摩擦过线后必须处理那一个工具。没过线时不要为了绕过门槛造工具。只有用户明确要求新工具时才调用 propose_tool_goal，插件会先请用户确认，不同意就返回 BELOW_THRESHOLD。已登记工具改它自己的字段。其他工具改为新增或修改本插件的工具，并查看 friction_status 的 notes。反复成功的片段见 compilable，调用 propose_compiled_procedure 前先看候选 asset_id。复杂任务先看 friction_status.quality，未同意不要开始找茬流程。
 ---
 
 # 更好的 DSH
 
-只处理已经过线的那一个工具。其他工具继续用。
+摩擦过线后必须处理那一个工具，其他工具继续用。没过线时不要造工具来绕过门槛，也不要故意制造失败。只有用户明确要求新工具时，才调用 `propose_tool_goal`。插件会先弹出确认；用户不允许就返回 `BELOW_THRESHOLD`，什么都不会记下。用户允许后，再调用 `apply_tool_change`，那是第二张审批卡，同意后才会装上，原工具仍然可以调用。已经过线的工具不需要这张额外确认。修改本插件已经有的工具，不看分数。
 
 已登记的示例工具仍用它自己的字段，例如 `pageSize`，并继续调用原来的名字。`metric` 只能是 `projected_calls`。补丁键必须和 `friction_status.definitions[].patchKeys` 一致。插件按公式计算调用次数，没有下降就拒绝。然后调用 `apply_tool_change`。
 
-正在使用、但没有登记的工具，不修改它的定义。过线后调用 `propose_tool_goal`，`patch_json` 写：
+正在使用、但没有登记的工具，不修改它的定义。调用 `propose_tool_goal`，`patch_json` 写：
 
 - `name`：可写 `plugin_check` 这类语义名。合法且没被占用就保留；不要指望它变成 `fd_bash_时间`。
 - `problem`：原工具的问题，最多 200 字
@@ -17,7 +17,7 @@ description: 某个正在使用的工具过线后必须使用。已登记工具�
 - `schema`：写成 `{ "dir": { "type": "string", "required": true, "description": "目录" } }`。带 `properties` 和 `required` 的 JSON Schema 也可以。可选字段不要写 `required: false`。
 - `run`：`{ "kind": "script", "command": "node --check ${dir}" }`，或直接写命令字符串。`${dir}` 和 `{{dir}}` 都会换成这次调用的参数。参数 JSON 同时放在环境变量 `FD_ARGS` 指向的文件里。其他工具用 `{ "kind": "delegate", "tool": "原工具名", "overrides": {} }`。脚本最长 4000 字。
 
-同意之后调用返回的 `patch` 里的工具名，并查看 `friction_status` 返回的 `notes`。`apply_tool_change` 的 `patch_json` 原样使用 `propose_tool_goal` 返回的 `patch`。如果装上的工具还不能完成任务，再对这个工具名调用 `propose_tool_goal`，向用户提出下一步修改。原工具在这个会话里会被拦住，定义本身不变。
+同意之后调用返回的 `patch` 里的工具名，并查看 `friction_status` 返回的 `notes`。`apply_tool_change` 的 `patch_json` 原样使用 `propose_tool_goal` 返回的 `patch`。如果装上的工具还不能完成任务，再对这个工具名调用 `propose_tool_goal`，向用户提出下一步修改。返回里 `voluntary` 为真时，说明用户已经在第一张卡上允许了未过线提案，原工具仍然可以调用。只有摩擦过线后的提案，同意后才会在这个会话里拦住原工具。原工具的定义本身不变。补丁里写 `confirmed` 没有用。
 
 新工具属于本插件，可以再改。对它再次调用 `propose_tool_goal`，写一份不同的 `problem`、`usage`、`schema` 或 `run`。相同的一版会被拒绝。名字保持不变。同意后，本轮仍使用旧的 schema 和说明。这一轮结束后，schema、执行方式和 notes 一起换成新的一版。
 
