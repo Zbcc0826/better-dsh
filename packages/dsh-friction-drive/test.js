@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, clearGate, failureOf, freshState, gateSkipped, importPersisted, installOwnedRecord, noteCall, normalizeOwnedPatch, notesDescription, ownedCopy, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, persistedRecord, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, scrubUnknownToolGate, semanticOwnedName, truncationOf } from './logic.js'
-import { fillTemplate, optionalSlots } from './owned-runtime.js'
+import { fillTemplate, optionalSlots, unknownArguments } from './owned-runtime.js'
 import { ingestCall } from './compiler.js'
 import { schemaError } from './schema.js'
 import { readSession, readShared, sessionDir, withSession, withShared } from './store.js'
@@ -349,6 +349,11 @@ test('插值自带 shell 引号，模板再包一层也不会叠成字面引号'
   const stillRequired = fillTemplate('node check.js ${dir} ${probeUrl}', {}, { optional })
   assert.equal(stillRequired.ok, false)
   assert.deepEqual(stillRequired.missing, ['dir'])
+  const typo = unknownArguments(schema, { dir: '/tmp/plugin', probe_url: 'http://127.0.0.1' })
+  assert.deepEqual(typo.unknown, ['probe_url'])
+  assert.match(typo.text, /未知参数 probe_url/)
+  assert.match(typo.text, /probeUrl/)
+  assert.equal(unknownArguments(schema, { dir: '/tmp/plugin' }), null)
 })
 
 test('persist 为 true 的工具进入以后的会话，且不拦住原工具', () => {

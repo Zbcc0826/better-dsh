@@ -29,6 +29,36 @@ export function optionalSlots(schema) {
 }
 
 /**
+ * schema 里声明过的参数名。作者字段表看每个字段，JSON Schema 看 properties。
+ */
+export function declaredSlots(schema) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return []
+  if (schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)) {
+    return Object.keys(schema.properties)
+  }
+  return Object.keys(schema).filter((key) => {
+    const field = schema[key]
+    return Boolean(field) && typeof field === 'object' && !Array.isArray(field)
+  })
+}
+
+/**
+ * 调用里多出来的参数。没声明的名字不会进命令，必须当场说明，不能当成没传。
+ * 没有声明任何参数时不判断，避免空 schema 把全部键都报成未知。
+ */
+export function unknownArguments(schema, args) {
+  const declared = declaredSlots(schema)
+  if (declared.length === 0 || !args || typeof args !== 'object' || Array.isArray(args)) return null
+  const known = new Set(declared)
+  const unknown = Object.keys(args).filter((key) => !known.has(key))
+  if (unknown.length === 0) return null
+  return {
+    unknown,
+    text: `未知参数 ${unknown.join(', ')}。已声明的参数：${declared.join(', ')}`,
+  }
+}
+
+/**
  * 把 {{参数}} 或 ${参数} 换成 shell 单引号包住的值。
  * 必填或缺席且不在 optional 里的槽位会让整条命令失败。
  * 可选槽位没传时换成空字符串。占位符两侧如果只有一层成对引号，先吃掉再放入。

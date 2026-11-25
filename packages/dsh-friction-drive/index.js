@@ -9,7 +9,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { allocateCompiledName, assessCompiledProposal, commitCompiled, compilableView, executeCompiled, ingestCall, installCompiled, interceptMatches, markStepAgent, matureFragments, noteRegisteredBreakpoint, stageCompiledRestore, stageCompiledRevision, visibleCompiled } from './compiler.js'
 import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, canonicalPatch, clearGate, failureOf, gateSkipped, importPersisted, installOwnedRecord, invalidAgainstSchema, normalizeOwnedPatch, ownedCopy, ownedCore, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, persistedRecord, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, scrubUnknownToolGate, semanticOwnedName, truncationOf } from './logic.js'
-import { fillTemplate, optionalSlots, presentDelegated, shellQuote } from './owned-runtime.js'
+import { fillTemplate, optionalSlots, presentDelegated, shellQuote, unknownArguments } from './owned-runtime.js'
 import { assessCritique, assessLoopOffer, assessPlan, qualityCopy, qualityView } from './quality.js'
 import { schemaError } from './schema.js'
 import { readSession, readShared, sessionDir, stateRoot, withSession, withShared } from './store.js'
@@ -813,6 +813,8 @@ function writeNotes(sessionId, owned) {
 
 /** 把参数写进命令、环境变量和临时 JSON。可选字段没传时写成空字符串。 */
 function bindScriptArguments(command, args, schema) {
+  const rejected = unknownArguments(schema, args)
+  if (rejected) return { ok: false, unknown: rejected.unknown, text: rejected.text }
   const optional = optionalSlots(schema)
   const filled = fillTemplate(command, args, { optional })
   if (!filled.ok) return filled
@@ -1000,7 +1002,7 @@ function ownedDefinition(ctx, drive, spec) {
       try {
         if (current.run.kind === 'script') {
           const bound = bindScriptArguments(current.run.command, args, current.schema)
-          if (!bound.ok) return { text: `缺少参数 ${bound.missing.join(', ')}`, failed: true }
+          if (!bound.ok) return { text: bound.text ?? `缺少参数 ${bound.missing.join(', ')}`, failed: true }
           const batch = await ctx.tools.execute({
             calls: [{ type: 'tool-call', id: callId, name: 'bash', arguments: JSON.stringify({ command: bound.command, description: `Run ${current.name}` }) }],
             agent: exec.agent,
