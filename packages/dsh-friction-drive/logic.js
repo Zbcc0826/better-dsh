@@ -26,6 +26,8 @@ export function freshTool() {
     unmet: 0,
     events: [],
     hold: false,
+    continueOnce: false,
+    lastSignature: '',
   }
 }
 
@@ -98,10 +100,23 @@ export function noteCall(state, event, options = {}) {
     state.notes.push('用户取消')
     return { state, blocked: false, gate: false, points: 0, reasons: [], tool, level: 'none' }
   }
-  if (tool.skipNext || tool.gated) {
+  if ((tool.gated || tool.continueOnce) && !state.pause) {
     tool.skipNext = false
-    tool.gated = false
-    tool.hold = false
+    return {
+      state,
+      blocked: true,
+      gate: true,
+      points: 0,
+      reasons: [],
+      tool,
+      level: 'L1',
+      code: 'GATED',
+      card: state.card ?? null,
+      signature: tool.lastSignature || '',
+    }
+  }
+  if (tool.skipNext && !state.pause) {
+    tool.skipNext = false
     return { state, blocked: true, gate: false, points: 0, reasons: [], tool, level: 'L1' }
   }
   const rolled = rollbackReplacement(state, event)
@@ -116,6 +131,7 @@ export function noteCall(state, event, options = {}) {
   if (scored.retry) tool.retries += 1
   if (event.truncated) tool.partials += 1
   const signature = failureSignature(name, event)
+  if (event.ok === false) tool.lastSignature = signature
   if (scored.points > 0) {
     tool.events.push({ weight: scored.points, round: state.round, at, signature })
   }
@@ -126,13 +142,16 @@ export function noteCall(state, event, options = {}) {
   if (Number.isInteger(event.workloadItems) && event.workloadItems >= 1) tool.workloadItems = event.workloadItems
   tool.score = currentScore(state, name, at)
   const repeats = signatureCountOf(state, name, signature, at)
+  const memory = hottestSignature(state, name, at)
+  const hot = repeats >= SIGNATURE_REPEAT || memory.count >= SIGNATURE_REPEAT || tool.score >= state.blockScore
+  const trigger = repeats >= SIGNATURE_REPEAT ? signature : (memory.signature || signature)
   let level = 'none'
   let hint = ''
-  if (!state.pause && scored.points > 0 && (repeats >= SIGNATURE_REPEAT || tool.score >= state.blockScore)) {
+  if (!state.pause && hot) {
     level = 'L1'
     tool.gated = true
     tool.hold = true
-    armCard(state, name, tool.score)
+    armCard(state, name, tool.score, trigger, tool.events)
   } else if (scored.points > 0 && tool.score >= state.hintScore) {
     level = 'L0'
     hint = `此工具近 3 轮反复失败（score ${tool.score}），可考虑沉淀替代`
@@ -156,6 +175,26 @@ export function noteCall(state, event, options = {}) {
 function signatureCountOf(state, name, signature, now) {
   const tool = state.tools?.[name]
   return (tool?.events ?? []).filter((item) => item.signature === signature && item.weight > 0 && (state.round - item.round) <= (state.halfLifeRounds * 2) && (now - item.at) <= (state.halfLifeMs * 2)).length
+}
+
+/** 窗口里出现最多的失败签名。成功的这一次不算，但旧失败还在就要重新拦。 */
+function hottestSignature(state, name, now) {
+  const counts = new Map()
+  for (const item of state.tools?.[name]?.events ?? []) {
+    if (!item.signature || !(item.weight > 0)) continue
+    if ((state.round - item.round) > state.halfLifeRounds * 2) continue
+    if ((now - item.at) > state.halfLifeMs * 2) continue
+    counts.set(item.signature, (counts.get(item.signature) ?? 0) + 1)
+  }
+  let signature = ''
+  let count = 0
+  for (const [key, value] of counts) {
+    if (value > count) {
+      signature = key
+      count = value
+    }
+  }
+  return { signature, count }
 }
 
 /** 工作量不能超过登记时的条目上限，也不能用 0 或小数把公式压低。 */

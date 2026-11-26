@@ -12,11 +12,11 @@ import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, canonicalPatc
 import { fillTemplate, optionalSlots, presentDelegated, shellQuote, unknownArguments } from './owned-runtime.js'
 import { assessCritique, assessLoopOffer, assessPlan, qualityCopy, qualityView } from './quality.js'
 import { schemaError } from './schema.js'
-import { closeSession, partitionTools, pauseGates } from './score.js'
+import { allowContinue, armCard, closeSession, gatedDecision, partitionTools, pauseGates, spendContinue } from './score.js'
 import { readSession, readShared, sessionDir, stateRoot, withSession, withShared } from './store.js'
 
 const ROOT = stateRoot
-const OWN = new Set(['friction_status', 'friction_pause', 'propose_tool_goal', 'apply_tool_change', 'restore_tool_definition', 'propose_compiled_procedure', 'propose_quality_loop', 'record_quality_critique', 'record_quality_plan'])
+const OWN = new Set(['friction_status', 'friction_pause', 'friction_choose', 'propose_tool_goal', 'apply_tool_change', 'restore_tool_definition', 'propose_compiled_procedure', 'propose_quality_loop', 'record_quality_critique', 'record_quality_plan'])
 
 export const name = 'friction-drive'
 export const inject = ['tools']
@@ -83,8 +83,10 @@ export function apply(ctx) {
         const successorBroken = Boolean(state.identity?.[successorName]?.broken)
         const successor = successorBroken ? '' : successorName
         return {
-          gated: Boolean(row?.gated) && !state.pause,
+          gated: Boolean(row?.gated) && !row?.continueOnce && !state.pause,
+          continueOnce: Boolean(row?.continueOnce) && !state.pause,
           paused: Boolean(state.pause),
+          card: state.card ?? null,
           successor,
           owned: Boolean(row?.owned),
           // 已有摩擦后继时，编译拦截让路。
@@ -94,16 +96,18 @@ export function apply(ctx) {
         return { gated: false, successor: '', owned: false, intercepts: [] }
       }
     },
-    /** 这一次拦住之后，下一次调用重新记账，不再一直禁用。 */
-    consumeHold(sessionId, tool) {
-      if (!sessionId) return false
+    /** 用户已经点过继续一次。花掉这一次，让紧接着的调用真正执行。 */
+    spendContinue(sessionId, tool) {
+      if (!sessionId) return { ok: false, code: 'NO_CONTINUE' }
+      return withSession(ROOT(), sessionId, this.threshold, ({ state }) => spendContinue(state, tool))
+    },
+    /** 旧状态只有闸、没有卡时补一张，避免拦住了却无处选择。 */
+    ensureCard(sessionId, tool) {
+      if (!sessionId) return null
       return withSession(ROOT(), sessionId, this.threshold, ({ state }) => {
+        if (state.card?.actions?.length) return state.card
         const row = state.tools?.[tool]
-        if (!row) return false
-        row.gated = false
-        row.hold = false
-        row.skipNext = true
-        return true
+        return armCard(state, tool, row?.score ?? 0, row?.lastSignature || '', row?.events || [])
       })
     },
   }
@@ -131,6 +135,11 @@ export function apply(ctx) {
           ...Object.keys(catalog.owned ?? {}),
           ...Object.keys(catalog.compiled ?? {}),
         ])
+        if (!state.card?.actions) {
+          for (const [name, tool] of Object.entries(state.tools ?? {})) {
+            if (tool?.gated) armCard(state, name, tool.score ?? 0, tool.lastSignature || '', tool.events || [])
+          }
+        }
         const parts = partitionTools(state, live)
         const extra = (state.notes ?? []).join('\n')
         return {
@@ -180,6 +189,39 @@ export function apply(ctx) {
         })),
         }
       }))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'friction_choose',
+    description: '处理过线选择卡。继续一次和暂停都要用户点允许。继续一次只放行一次，执行完重新评估。',
+    parameters: {
+      action: { type: 'string', required: true, description: 'continue-one 或 pause' },
+      tool: { type: 'string', description: '要放行一次的工具名。选暂停时可以不填。' },
+    },
+    output: textOutput(),
+    async execute(args, exec) {
+      const sessionId = drive.sessionOf(exec)
+      if (!sessionId) return JSON.stringify({ ok: false, code: 'SESSION_REQUIRED' })
+      if (args?.action === 'pause') {
+        const outcome = await askApproval(ctx, exec, 'friction_choose', '暂停本会话的摩擦闸门。计数继续记，会话结束自动恢复。', {
+          zh: '暂停本会话的摩擦闸门。只放行这一选择，计数继续记，会话结束自动恢复。',
+          en: 'Pause friction gates for this session. Counting continues and they resume when the session ends.',
+        })
+        if (outcome !== 'allowed-once') return JSON.stringify({ ok: false, code: 'NOT_APPROVED', outcome })
+        const saved = withSession(ROOT(), sessionId, drive.threshold, ({ state }) => pauseGates(state, new Date().toISOString(), 'user'))
+        return JSON.stringify({ ok: true, action: 'pause', ...saved })
+      }
+      if (args?.action !== 'continue-one') return JSON.stringify({ ok: false, code: 'BAD_ACTION' })
+      const tool = typeof args?.tool === 'string' ? args.tool.trim() : ''
+      if (!tool) return JSON.stringify({ ok: false, code: 'TOOL_REQUIRED' })
+      const outcome = await askApproval(ctx, exec, 'friction_choose', `只放行 ${tool} 一次。这一次执行完会重新评估。`, {
+        zh: `只放行 ${tool} 一次。三个选项里这一次选的是继续一次，执行完会重新评估。`,
+        en: `Allow ${tool} once. It is checked again after that single call.`,
+      })
+      if (outcome !== 'allowed-once') return JSON.stringify({ ok: false, code: 'NOT_APPROVED', outcome })
+      const saved = withSession(ROOT(), sessionId, drive.threshold, ({ state }) => allowContinue(state, tool))
+      return JSON.stringify(saved)
     },
   }))
 
@@ -642,12 +684,15 @@ function watchTools(ctx, drive) {
       return decision
     }
     if (gate.paused) return decision
+    if (gate.continueOnce) {
+      const spent = drive.spendContinue(drive.sessionOf(exec), exec.name)
+      if (spent?.ok) return decision
+      return { kind: 'deny', reason: JSON.stringify(gatedDecision(gate.card)) }
+    }
     if (gate.gated) {
-      try { drive.consumeHold(drive.sessionOf(exec), exec.name) } catch { /* 放不下这次跳过时，仍只拒绝这一次 */ }
-      return {
-        kind: 'deny',
-        reason: `${exec.name} 近几次失败已到拦截线。这一次先停下来。可以沉淀替代、继续这一次之后的调用，或让用户暂停本会话闸门。请查看 friction_status。`,
-      }
+      let card = gate.card
+      try { card = drive.ensureCard(drive.sessionOf(exec), exec.name) ?? card } catch { /* 读不到新卡时用刚才看到的 */ }
+      return { kind: 'deny', reason: JSON.stringify(gatedDecision(card)) }
     }
     if (gate.successor) {
       return { kind: 'deny', reason: `${exec.name} 在这个会话里请改用 ${gate.successor}，并查看 friction_status 的 notes。原工具定义没有修改。` }

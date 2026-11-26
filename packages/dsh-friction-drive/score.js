@@ -131,17 +131,69 @@ export function rollbackReplacement(state, event) {
   return null
 }
 
-/** 同一轮里后过线的工具并进已经发出的那一张卡。 */
-export function armCard(state, name, score) {
+/** 选择卡上的三个动作。继续一次和暂停都要用户点允许。 */
+export const CARD_ACTIONS = [
+  { id: 'propose', label: '沉淀替代' },
+  { id: 'continue-one', label: '继续一次' },
+  { id: 'pause', label: '本会话暂停' },
+]
+
+/** 拦住时交给调用方的说明。只放行一次，三个选项都写上。 */
+export const GATE_MESSAGE = '只放行一次。三个选项：沉淀替代、继续一次、本会话暂停。'
+
+/**
+ * 过线时写一张选择卡。同一轮里后过线的工具并进这一张，不另发。
+ * 卡上有工具名、分数、失败签名、最近几次事件和三个动作。
+ */
+export function armCard(state, name, score, signature = '', events = []) {
   ensureLedgers(state)
-  if (!state.card || state.card.round !== state.round) {
-    state.card = { round: state.round, tools: [] }
+  const entry = {
+    tool: name,
+    name,
+    score,
+    signature,
+    events: eventSummary(events),
+  }
+  if (!state.card?.actions || state.card.round !== state.round) {
+    state.card = {
+      round: state.round,
+      ...entry,
+      actions: CARD_ACTIONS.map((item) => ({ ...item })),
+      tools: [entry],
+    }
     state.cardsIssued += 1
+    return state.card
   }
-  if (!state.card.tools.some((item) => item.name === name)) {
-    state.card.tools.push({ name, score })
-  }
+  const index = state.card.tools.findIndex((item) => item.tool === name)
+  if (index === -1) state.card.tools.push(entry)
+  else state.card.tools[index] = entry
+  Object.assign(state.card, entry)
   return state.card
+}
+
+/** 被拦住的调用返回这个结构，状态里的 card 是同一张。 */
+export function gatedDecision(card) {
+  return { ok: false, code: 'GATED', message: GATE_MESSAGE, card: card ?? null }
+}
+
+/** 用户点了继续一次。闸先留着，真正执行前再花掉这一次。 */
+export function allowContinue(state, name) {
+  ensureLedgers(state)
+  const tool = state.tools?.[name]
+  if (!tool?.gated) return { ok: false, code: 'NOT_GATED' }
+  tool.continueOnce = true
+  state.notes.push(`用户选择继续一次：${name}。只放行一次。`)
+  return { ok: true, action: 'continue-one', tool: name }
+}
+
+/** 这一次调用获准执行。随后重新评估，不会一直放开。 */
+export function spendContinue(state, name) {
+  const tool = state.tools?.[name]
+  if (!tool?.continueOnce) return { ok: false, code: 'NO_CONTINUE' }
+  tool.continueOnce = false
+  tool.gated = false
+  tool.hold = false
+  return { ok: true }
 }
 
 /** 只有用户或设置页能暂停。代理自己调用会被拒绝。 */
@@ -149,6 +201,13 @@ export function pauseGates(state, at, source) {
   ensureLedgers(state)
   if (source !== 'user' && source !== 'setting') return { ok: false, code: 'PAUSE_FORBIDDEN' }
   state.pause = { at, by: source }
+  for (const tool of Object.values(state.tools ?? {})) {
+    if (!tool) continue
+    tool.gated = false
+    tool.hold = false
+    tool.continueOnce = false
+  }
+  state.card = null
   state.notes.push(`闸门已于 ${at} 由用户暂停`)
   return { ok: true, pause: state.pause }
 }
@@ -246,6 +305,14 @@ function messageShape(event) {
   const unknown = text.match(/unknown tool[:\s"]+([A-Za-z0-9_.-]+)/i)
   if (unknown) return `unknown tool:${unknown[1]}`
   return 'error'
+}
+
+function eventSummary(events) {
+  return (events ?? []).slice(-5).map((item) => ({
+    round: item.round ?? 0,
+    weight: item.weight ?? 0,
+    signature: item.signature ?? '',
+  }))
 }
 
 function round2(value) {

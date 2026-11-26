@@ -10,7 +10,7 @@ import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, clearGate, fa
 import { fillTemplate, optionalSlots, unknownArguments } from './owned-runtime.js'
 import { ingestCall } from './compiler.js'
 import { schemaError } from './schema.js'
-import { closeSession, currentScore, partitionTools, pauseGates, resumeSession } from './score.js'
+import { allowContinue, closeSession, currentScore, gatedDecision, partitionTools, pauseGates, resumeSession, spendContinue } from './score.js'
 import { readSession, readShared, sessionDir, withSession, withShared } from './store.js'
 
 const ledgerEntry = {
@@ -49,12 +49,30 @@ test('同一失败签名第三次才拦下一次，不连坐其他工具', () =>
   assert.equal(calls[2].blocked, false)
   assert.equal(calls[2].gate, true)
   assert.equal(calls[0].signature, calls[2].signature)
+  assert.equal(state.card.tool, 'ledger')
+  assert.equal(state.card.signature, calls[2].signature)
+  assert.deepEqual(state.card.actions.map((item) => item.id), ['propose', 'continue-one', 'pause'])
+  const decision = gatedDecision(state.card)
+  assert.equal(decision.code, 'GATED')
+  assert.match(decision.message, /只放行一次/)
+  assert.match(decision.message, /沉淀替代/)
+  assert.match(decision.message, /继续一次/)
+  assert.match(decision.message, /本会话暂停/)
+  assert.equal(decision.message.includes('继续这一次之后的调用'), false)
   const other = noteCall(state, { tool: 'fx', ok: true, args: '{"command":"pwd"}', round: 1 })
   assert.equal(other.blocked, false)
   const next = noteCall(state, { tool: 'ledger', ok: false, args: '{"command":"ls"}', output: 'BAD_PATCH:sources', round: 1 })
   assert.equal(next.blocked, true)
-  const after = noteCall(state, { tool: 'ledger', ok: true, args: '{"command":"pwd"}', round: 1 })
-  assert.equal(after.blocked, false)
+  assert.equal(next.code, 'GATED')
+  assert.equal(state.tools.ledger.gated, true)
+  assert.equal(allowContinue(state, 'ledger').ok, true)
+  assert.equal(spendContinue(state, 'ledger').ok, true)
+  const once = noteCall(state, { tool: 'ledger', ok: true, args: '{"command":"pwd"}', round: 1 })
+  assert.equal(once.blocked, false)
+  assert.equal(state.tools.ledger.gated, true)
+  const again = noteCall(state, { tool: 'ledger', ok: true, args: '{"command":"pwd"}', round: 1 })
+  assert.equal(again.blocked, true)
+  assert.equal(again.code, 'GATED')
 })
 
 test('预计次数按本会话工作量计算，非法页码和不能下降的补丁会被拒绝', () => {
@@ -534,7 +552,9 @@ test('多个工具同时过线只发一张卡', () => {
   }
   assert.equal(state.cardsIssued, 1)
   assert.equal(state.card.tools.length, 3)
-  assert.deepEqual(state.card.tools.map((item) => item.name).sort(), ['bash', 'read', 'skill'])
+  assert.deepEqual(state.card.tools.map((item) => item.tool).sort(), ['bash', 'read', 'skill'])
+  assert.equal(state.card.actions.length, 3)
+  assert.ok(state.card.events.length >= 1)
 })
 
 test('用户取消不计分，暂停只对用户开放且会话结束恢复', () => {

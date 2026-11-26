@@ -1,6 +1,6 @@
 {
   "name": "dsh-friction-demo",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "private": true,
   "main": "index.js",
@@ -8,6 +8,6 @@
   "engines": { "dsh": ">=0.2.2-rc.3 <0.3.0" },
   "peerDependencies": {
     "@deepseek-ai/dsh-tools": "0.2.2-rc.3",
-    "dsh-friction-drive": "0.2.1"
+    "dsh-friction-drive": "0.2.2"
   }
 }
