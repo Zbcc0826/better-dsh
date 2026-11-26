@@ -1,6 +1,6 @@
 {
   "name": "dsh-friction-drive",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "type": "module",
   "private": true,
   "main": "index.js",

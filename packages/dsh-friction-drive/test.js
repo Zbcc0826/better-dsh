@@ -105,6 +105,27 @@ test('工具正文里的不同错误各有签名，慢的成功调用不签名�
   assert.equal(slow.tools.wiki_ingest.gated, false)
 })
 
+test('卡片签名取最近一次真正失败，不沿用更早的 ok·error', () => {
+  const state = freshState()
+  const tool = freshTool()
+  const at = Date.now()
+  tool.events = [0, 1, 2].map(() => ({ weight: 0.2, round: 1, at, signature: 'wiki_ingest·ok·error' }))
+  state.tools.wiki_ingest = tool
+  const call = noteCall(state, {
+    tool: 'wiki_ingest',
+    ok: true,
+    output: '{"ok":false,"code":"BAD_PATCH","field":"claims"}',
+    elapsedMs: 10,
+    round: 1,
+    at,
+  })
+  assert.equal(call.gate, true)
+  assert.equal(state.card.signature, 'wiki_ingest·BAD_PATCH·BAD_PATCH:claims')
+  assert.equal(state.card.signatures[0], 'wiki_ingest·BAD_PATCH·BAD_PATCH:claims')
+  assert.equal(state.card.signatures.includes('wiki_ingest·ok·error'), true)
+  assert.equal(state.tools.wiki_ingest.events.some((item) => item.signature === 'wiki_ingest·ok·error'), true)
+})
+
 test('预计次数按本会话工作量计算，非法页码和不能下降的补丁会被拒绝', () => {
   assert.equal(projectedCalls(ledgerSpec, ledgerEntry, null).calls, 9)
   assert.equal(projectedCalls(ledgerSpec, ledgerEntry, 5).calls, 6)

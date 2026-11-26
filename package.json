@@ -1,6 +1,6 @@
 {
   "name": "dsh-friction-drive",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "行为来自 Agent 自己的使用体验。替代工具或沉淀程序在执行前征求同意。可能增加 token 消耗。",
   "type": "module",
   "private": true,

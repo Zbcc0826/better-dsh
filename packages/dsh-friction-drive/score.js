@@ -165,11 +165,13 @@ export const GATE_MESSAGE = '只放行一次。三个选项：沉淀替代、继
  */
 export function armCard(state, name, score, signature = '', events = []) {
   ensureLedgers(state)
+  const shown = cardSignature(signature, events)
   const entry = {
     tool: name,
     name,
     score,
-    signature: signature || null,
+    signature: shown,
+    signatures: cardSignatures(shown, events),
     events: eventSummary(events),
   }
   if (!state.card?.actions || state.card.round !== state.round) {
@@ -337,6 +339,23 @@ function eventSummary(events) {
     weight: item.weight ?? 0,
     signature: item.signature ?? '',
   }))
+}
+
+/** 卡面签名取最近一次真正的失败。权重不到 1 的旧记录（例如 ok·error）不盖住它。 */
+function cardSignature(signature, events) {
+  const lastFailure = [...(events ?? [])].reverse().find((item) => item.signature && (item.weight ?? 0) >= 1)
+  return lastFailure?.signature || signature || null
+}
+
+/** 重复到线的签名都列出来。最近一次失败放在最前，方便和卡面签名对照。 */
+function cardSignatures(headline, events) {
+  const counts = new Map()
+  for (const item of events ?? []) {
+    if (!item.signature || !(item.weight > 0)) continue
+    counts.set(item.signature, (counts.get(item.signature) ?? 0) + 1)
+  }
+  const repeated = [...counts].filter(([, count]) => count >= SIGNATURE_REPEAT).map(([key]) => key)
+  return [...new Set([headline, ...repeated].filter(Boolean))]
 }
 
 function round2(value) {
