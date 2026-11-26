@@ -75,6 +75,36 @@ test('同一失败签名第三次才拦下一次，不连坐其他工具', () =>
   assert.equal(again.code, 'GATED')
 })
 
+test('工具正文里的不同错误各有签名，慢的成功调用不签名也不拦', () => {
+  const state = freshState()
+  const slug = noteCall(state, { tool: 'wiki_ingest', ok: true, output: '{"ok":false,"code":"BAD_PATCH","field":"slug"}', elapsedMs: 10, round: 1 })
+  const timed = noteCall(state, { tool: 'wiki_ingest', ok: true, output: '{"ok":false,"code":"ETIMEDOUT"}', elapsedMs: 10, round: 1 })
+  assert.equal(slug.signature, 'wiki_ingest·BAD_PATCH·BAD_PATCH:slug')
+  assert.equal(timed.signature, 'wiki_ingest·ETIMEDOUT·ETIMEDOUT')
+  assert.notEqual(slug.signature, timed.signature)
+  assert.equal(failureOf({ content: [{ text: '{"ok":false,"code":"BAD_PATCH","field":"contradicts"}' }] }).ok, false)
+  const pit = freshState()
+  let last
+  for (let index = 0; index < 3; index += 1) {
+    last = noteCall(pit, { tool: 'wiki_ingest', ok: true, output: '{"ok":false,"code":"BAD_PATCH","field":"slug"}', elapsedMs: 10, round: 1 })
+  }
+  assert.equal(last.gate, true)
+  assert.equal(pit.card.signature, 'wiki_ingest·BAD_PATCH·BAD_PATCH:slug')
+  const mixed = freshState()
+  noteCall(mixed, { tool: 'wiki_ingest', ok: true, output: '{"ok":false,"code":"BAD_PATCH","field":"slug"}', elapsedMs: 10, round: 1 })
+  noteCall(mixed, { tool: 'wiki_ingest', ok: true, output: '{"ok":false,"code":"BAD_PATCH","field":"contradicts"}', elapsedMs: 10, round: 1 })
+  const other = noteCall(mixed, { tool: 'wiki_ingest', ok: true, output: '{"ok":false,"code":"ETIMEDOUT"}', elapsedMs: 10, round: 1 })
+  assert.equal(other.gate, false)
+  assert.equal(mixed.tools.wiki_ingest.gated, false)
+  const slow = freshState()
+  for (let index = 0; index < 3; index += 1) {
+    const call = noteCall(slow, { tool: 'wiki_ingest', ok: true, output: '已写入', elapsedMs: 3000, round: 1 })
+    assert.equal(call.signature, '')
+    assert.equal(call.gate, false)
+  }
+  assert.equal(slow.tools.wiki_ingest.gated, false)
+})
+
 test('预计次数按本会话工作量计算，非法页码和不能下降的补丁会被拒绝', () => {
   assert.equal(projectedCalls(ledgerSpec, ledgerEntry, null).calls, 9)
   assert.equal(projectedCalls(ledgerSpec, ledgerEntry, 5).calls, 6)

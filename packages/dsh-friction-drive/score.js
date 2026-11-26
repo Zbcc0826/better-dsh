@@ -50,11 +50,29 @@ export function ensureIdentity(state, name) {
 
 /**
  * 失败签名：工具、错误码、消息形状。
- * 同一个坑会落到同一条签名上，不同的坑不会并在一起。
+ * 成功调用不签名。同一个坑会落到同一条签名上，不同的坑不会并在一起。
+ * 工具正文里的 {"ok":false,"code":"BAD_PATCH","field":"slug"} 记成 BAD_PATCH:slug。
  */
 export function failureSignature(tool, event) {
-  const code = event.errorCode || extractCode(event) || (event.ok === false ? 'failure' : 'ok')
-  return `${tool}·${code}·${messageShape(event)}`
+  const parsed = parseToolError(event)
+  if (!parsed && event.ok !== false) return ''
+  const code = parsed?.code || event.errorCode || extractCode(event) || 'failure'
+  const shape = parsed ? parsedShape(parsed) : messageShape(event)
+  return `${tool}·${code}·${shape}`
+}
+
+/** 工具把失败写在 JSON 正文里时，取出错误码和字段。正文不是纯 JSON 就不猜。 */
+export function parseToolError(event) {
+  const text = `${event?.output ?? ''}\n${event?.message ?? ''}`.trim()
+  if (!text.startsWith('{')) return null
+  let body
+  try { body = JSON.parse(text) } catch { return null }
+  if (!body || body.ok !== false || typeof body.code !== 'string' || !body.code.trim()) return null
+  return {
+    code: body.code.trim(),
+    field: typeof body.field === 'string' ? body.field.trim() : '',
+    id: typeof body.id === 'string' ? body.id.trim() : '',
+  }
 }
 
 /** 按轮数和时间同时衰减。现在这一轮、这一刻的权重是 1。 */
@@ -151,7 +169,7 @@ export function armCard(state, name, score, signature = '', events = []) {
     tool: name,
     name,
     score,
-    signature,
+    signature: signature || null,
     events: eventSummary(events),
   }
   if (!state.card?.actions || state.card.round !== state.round) {
@@ -278,6 +296,12 @@ export function partitionTools(state, liveNames, now = Date.now()) {
     else active[name] = row
   }
   return { active, retired, unmet }
+}
+
+function parsedShape(parsed) {
+  if (parsed.field) return `${parsed.code}:${parsed.field}`
+  if (parsed.id) return `${parsed.code}:${parsed.id}`
+  return parsed.code
 }
 
 function extractCode(event) {

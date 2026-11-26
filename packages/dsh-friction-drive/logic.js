@@ -3,7 +3,7 @@
  * 预计调用次数由插件按登记时的公式计算，不采用工具临时返回的数字。
  */
 
-import { armCard, currentScore, ensureIdentity, ensureLedgers, failureSignature, noteRepetition, repetitionSuggestion, rollbackReplacement, SIGNATURE_REPEAT } from './score.js'
+import { armCard, currentScore, ensureIdentity, ensureLedgers, failureSignature, noteRepetition, parseToolError, repetitionSuggestion, rollbackReplacement, SIGNATURE_REPEAT } from './score.js'
 
 export const PATCH_KEYS = ['pageSize', 'warmupError', 'format', 'engine', 'minIntervalMs', 'delayMs']
 
@@ -123,6 +123,7 @@ export function noteCall(state, event, options = {}) {
   if (rolled) {
     return { state, blocked: false, gate: false, points: 0, reasons: [], tool, broken: true, restored: rolled.restored, level: 'none' }
   }
+  if (parseToolError(event)) event = { ...event, ok: false }
   if (Number.isInteger(event.round)) state.round = Math.max(state.round, event.round)
   const at = Number.isFinite(event.at) ? event.at : Date.now()
   const scored = scoreCall(tool, event, options)
@@ -141,10 +142,10 @@ export function noteCall(state, event, options = {}) {
   tool.lastOutputChars = event.outputChars ?? 0
   if (Number.isInteger(event.workloadItems) && event.workloadItems >= 1) tool.workloadItems = event.workloadItems
   tool.score = currentScore(state, name, at)
-  const repeats = signatureCountOf(state, name, signature, at)
+  const repeats = signature ? signatureCountOf(state, name, signature, at) : 0
   const memory = hottestSignature(state, name, at)
   const hot = repeats >= SIGNATURE_REPEAT || memory.count >= SIGNATURE_REPEAT || tool.score >= state.blockScore
-  const trigger = repeats >= SIGNATURE_REPEAT ? signature : (memory.signature || signature)
+  const trigger = repeats >= SIGNATURE_REPEAT ? signature : (memory.count >= SIGNATURE_REPEAT ? memory.signature : null)
   let level = 'none'
   let hint = ''
   if (!state.pause && hot) {
@@ -174,7 +175,8 @@ export function noteCall(state, event, options = {}) {
 
 function signatureCountOf(state, name, signature, now) {
   const tool = state.tools?.[name]
-  return (tool?.events ?? []).filter((item) => item.signature === signature && item.weight > 0 && (state.round - item.round) <= (state.halfLifeRounds * 2) && (now - item.at) <= (state.halfLifeMs * 2)).length
+  if (!signature) return 0
+  return (tool?.events ?? []).filter((item) => item.signature && item.signature === signature && item.weight > 0 && (state.round - item.round) <= (state.halfLifeRounds * 2) && (now - item.at) <= (state.halfLifeMs * 2)).length
 }
 
 /** 窗口里出现最多的失败签名。成功的这一次不算，但旧失败还在就要重新拦。 */
@@ -468,6 +470,7 @@ export function failureOf(result) {
   if (typeof code === 'number' && code !== 0) return { ok: false, invalid: false }
   const text = (result?.content ?? []).map((block) => block?.text ?? '').join('\n')
   if (commandFailed(text)) return { ok: false, invalid: false }
+  if (parseToolError({ output: text })) return { ok: false, invalid: false }
   return { ok: true, invalid: false }
 }
 
