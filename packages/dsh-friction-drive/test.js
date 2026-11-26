@@ -6,10 +6,11 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, clearGate, failureOf, freshState, gateSkipped, importPersisted, installOwnedRecord, noteCall, normalizeOwnedPatch, notesDescription, ownedCopy, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, persistedRecord, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, scrubUnknownToolGate, semanticOwnedName, truncationOf } from './logic.js'
+import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, clearGate, failureOf, freshState, freshTool, gateSkipped, importPersisted, installOwnedRecord, noteCall, normalizeOwnedPatch, notesDescription, ownedCopy, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, persistedRecord, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, scrubUnknownToolGate, semanticOwnedName, truncationOf } from './logic.js'
 import { fillTemplate, optionalSlots, unknownArguments } from './owned-runtime.js'
 import { ingestCall } from './compiler.js'
 import { schemaError } from './schema.js'
+import { closeSession, currentScore, partitionTools, pauseGates, resumeSession } from './score.js'
 import { readSession, readShared, sessionDir, withSession, withShared } from './store.js'
 
 const ledgerEntry = {
@@ -39,15 +40,21 @@ test('成功的同参重复不加分，失败后的同参重试仍计 verbose', 
   assert.ok(retry.reasons.includes('verbose'))
 })
 
-test('过线的这一次不拦截，下一次才拦截，且不连坐其他工具', () => {
-  const state = freshState(4)
-  const crossed = noteCall(state, { tool: 'ledger', ok: false, args: '1', truncated: true })
-  assert.equal(crossed.blocked, false)
-  assert.equal(crossed.gate, true)
-  const other = noteCall(state, { tool: 'fx', ok: true, args: '1' })
+test('同一失败签名第三次才拦下一次，不连坐其他工具', () => {
+  const state = freshState()
+  const calls = []
+  for (let index = 0; index < 3; index += 1) {
+    calls.push(noteCall(state, { tool: 'ledger', ok: false, args: '{"command":"ls"}', output: 'BAD_PATCH:sources', round: 1 }))
+  }
+  assert.equal(calls[2].blocked, false)
+  assert.equal(calls[2].gate, true)
+  assert.equal(calls[0].signature, calls[2].signature)
+  const other = noteCall(state, { tool: 'fx', ok: true, args: '{"command":"pwd"}', round: 1 })
   assert.equal(other.blocked, false)
-  const next = noteCall(state, { tool: 'ledger', ok: true, args: '2' })
+  const next = noteCall(state, { tool: 'ledger', ok: false, args: '{"command":"ls"}', output: 'BAD_PATCH:sources', round: 1 })
   assert.equal(next.blocked, true)
+  const after = noteCall(state, { tool: 'ledger', ok: true, args: '{"command":"pwd"}', round: 1 })
+  assert.equal(after.blocked, false)
 })
 
 test('预计次数按本会话工作量计算，非法页码和不能下降的补丁会被拒绝', () => {
@@ -56,7 +63,9 @@ test('预计次数按本会话工作量计算，非法页码和不能下降的�
   assert.equal(projectedCalls({ ...ledgerSpec, pageSize: 50 }, ledgerEntry, 5).calls, 2)
   assert.equal(projectedCalls({ ...ledgerSpec, engine: 'ledger_compact' }, ledgerEntry, 5).calls, 1)
   const state = freshState(1)
-  noteCall(state, { tool: 'ledger', ok: false, args: '1', workloadItems: 5 })
+  for (let index = 0; index < 3; index += 1) {
+    noteCall(state, { tool: 'ledger', ok: false, args: '1', workloadItems: 5, output: 'EPERM:open' })
+  }
   assert.equal(propose(state, { tool: 'ledger', metric: 'failures', patch: { pageSize: 8 } }, ledgerEntry, ledgerSpec).code, 'METRIC_NOT_RETESTABLE')
   assert.equal(propose(state, { tool: 'ledger', metric: 'projected_calls', patch: { pageSize: 0 } }, ledgerEntry, ledgerSpec).code, 'BAD_PATCH')
   assert.equal(propose(state, { tool: 'ledger', metric: 'projected_calls', patch: { description: '隐藏' } }, ledgerEntry, ledgerSpec).code, 'BAD_PATCH')
@@ -153,7 +162,9 @@ test('新工具的 schema 能表达数组，不能表达的关键字整份拒绝
 
 test('过线后提出的是本插件的新工具，相同的一版不能再批', () => {
   const state = freshState(1)
-  noteCall(state, { tool: 'grep', ok: false, args: '{}' })
+  for (let index = 0; index < 3; index += 1) {
+    noteCall(state, { tool: 'grep', ok: false, args: '{}', output: 'EPERM:open' })
+  }
   const spec = {
     name: 'grep_src',
     problem: '结果被截断',
@@ -201,7 +212,9 @@ test('新工具名字带 fd 前缀和时间，覆盖值必须符合原工具字�
   assert.equal(gateSkipped('bash', 'bash'), true)
   assert.equal(gateSkipped('grep', 'bash'), false)
   const state = freshState(1)
-  noteCall(state, { tool: 'grep', ok: false, args: '{}' })
+  for (let index = 0; index < 3; index += 1) {
+    noteCall(state, { tool: 'grep', ok: false, args: '{}', output: 'EPERM:open' })
+  }
   const rejected = proposeOwned(state, {
     tool: 'grep',
     name: 'grep_src',
@@ -446,10 +459,135 @@ test('并行更新不会丢分数，死进程留下的锁会被清掉', () => {
   withSession(dir, 'same', 100, () => {})
   writeFileSync(path.join(stale, '.lock'), '999999\n')
   const runs = Array.from({ length: 8 }, (_, index) => withSession(dir, 'same', 100, ({ state }) => {
-    noteCall(state, { tool: 'ledger', ok: false, args: String(index) })
+    noteCall(state, { tool: 'ledger', ok: true, args: `{"n":${index}}` })
   }))
   assert.equal(runs.length, 8)
-  const failures = withSession(dir, 'same', 100, ({ state }) => state.tools.ledger.failures)
-  assert.equal(failures, 8)
+  const calls = withSession(dir, 'same', 100, ({ state }) => state.tools.ledger.calls)
+  assert.equal(calls, 8)
   rmSync(dir, { recursive: true, force: true })
+})
+
+test('慢磨和跨时段失败不闸，分数会衰减', () => {
+  const state = freshState()
+  noteCall(state, { tool: 'read', ok: false, args: '{"path":"a"}', output: 'ENOENT', round: 0, at: 0 })
+  for (let round = 1; round <= 3; round += 1) {
+    noteCall(state, { tool: 'read', ok: true, args: `{"path":"ok-${round}"}`, round, at: round })
+  }
+  const mid = noteCall(state, { tool: 'read', ok: false, args: '{"path":"b"}', output: 'EACCES', round: 4, at: 4 })
+  assert.equal(mid.gate, false)
+  assert.equal(mid.level === 'L1', false)
+  const midScore = mid.tool.score
+  const later = noteCall(state, { tool: 'read', ok: true, args: '{"path":"c"}', round: 5, at: 5 })
+  assert.equal(later.blocked, false)
+  assert.ok(later.tool.score < midScore)
+})
+
+test('同一结构成功三次只建议沉淀，不关闸', () => {
+  const state = freshState()
+  let last
+  for (let round = 1; round <= 3; round += 1) {
+    last = noteCall(state, { tool: 'bash', ok: true, args: '{"command":"ls","check":true}', round })
+  }
+  assert.equal(last.gate, false)
+  assert.equal(state.tools.bash.gated, false)
+  const row = Object.values(state.repetition).find((item) => item.count >= 3)
+  assert.ok(row)
+  assert.match(last.suggestion, /沉淀/)
+})
+
+test('坏替换第一次失败就交还原工具，并且不加分', () => {
+  const state = freshState()
+  state.tools.bash = freshTool()
+  state.tools.bash.successor = 'fd_bash_1'
+  const result = noteCall(state, {
+    tool: 'fd_bash_1',
+    ok: false,
+    output: 'cannot get required service "tools" in inactive context',
+  })
+  assert.equal(result.broken, true)
+  assert.equal(result.restored, 'bash')
+  assert.equal(state.tools.bash.successor, undefined)
+  assert.equal(state.identity.fd_bash_1.broken, true)
+  assert.equal(state.tools.bash.score, 0)
+  const again = noteCall(state, { tool: 'bash', ok: true, args: '{"command":"ls"}' })
+  assert.equal(again.blocked, false)
+})
+
+test('恢复会话只衰减分数，不新增退役行', () => {
+  const state = freshState()
+  state.tools.read = freshTool()
+  state.tools.read.score = 9
+  state.identity.read = { registered: true, persisted: false, voluntary: false, unmet: 0, retiredAt: null, broken: false }
+  const before = { ...state.identity.read }
+  const resumed = resumeSession(state, 10_000)
+  assert.ok(state.tools.read.score < 9)
+  assert.deepEqual(state.identity.read, before)
+  assert.equal(resumed.retiredAdded, 0)
+})
+
+test('多个工具同时过线只发一张卡', () => {
+  const state = freshState()
+  for (const name of ['read', 'skill', 'bash']) {
+    for (let index = 0; index < 3; index += 1) {
+      noteCall(state, { tool: name, ok: false, args: '{"path":"a"}', output: 'EPERM:open', round: 1, at: 1 })
+    }
+  }
+  assert.equal(state.cardsIssued, 1)
+  assert.equal(state.card.tools.length, 3)
+  assert.deepEqual(state.card.tools.map((item) => item.name).sort(), ['bash', 'read', 'skill'])
+})
+
+test('用户取消不计分，暂停只对用户开放且会话结束恢复', () => {
+  const state = freshState()
+  const cancelled = noteCall(state, { tool: 'bash', ok: false, cancelled: true, output: 'no' })
+  assert.equal(cancelled.points, 0)
+  assert.equal(state.tools.bash.score ?? 0, 0)
+  assert.match(state.notes.join('\n'), /用户取消/)
+  assert.equal(pauseGates(state, '2026-11-26T03:00:00.000Z', 'agent').code, 'PAUSE_FORBIDDEN')
+  assert.equal(pauseGates(state, '2026-11-26T03:00:00.000Z', 'user').ok, true)
+  for (let index = 0; index < 3; index += 1) {
+    const failed = noteCall(state, { tool: 'bash', ok: false, args: '{"command":"ls"}', output: 'EPERM:open', round: 1 })
+    assert.equal(failed.gate, false)
+  }
+  assert.match(state.notes.join('\n'), /闸门已于 2026-11-26T03:00:00.000Z 由用户暂停/)
+  const summary = closeSession(state)
+  assert.equal(summary.restored, true)
+  assert.equal(state.pause, null)
+  assert.match(state.notes.join('\n'), /会话结束恢复/)
+})
+
+test('八小时后的旧失败掉到拦线以下', () => {
+  const state = freshState()
+  const start = Date.parse('2026-11-25T00:00:00.000Z')
+  state.tools.bash = freshTool()
+  state.tools.bash.events = Array.from({ length: 10 }, (_item, index) => ({
+    weight: 1,
+    round: 0,
+    at: start,
+    signature: `bash·E${index}·shape-${index}`,
+  }))
+  assert.ok(currentScore(state, 'bash', start) >= 10)
+  const later = currentScore(state, 'bash', start + (8 * 60 * 60 * 1000))
+  assert.ok(later < 10)
+})
+
+test('只剩计数的替换工具进退役区', () => {
+  const state = freshState()
+  state.tools.bash = freshTool()
+  state.tools.bash.calls = 1
+  state.tools.fd_bash_1795591267336 = freshTool()
+  state.tools.fd_bash_1795591267336.calls = 1
+  const view = partitionTools(state, new Set(['bash']))
+  assert.equal(view.active.fd_bash_1795591267336, undefined)
+  assert.ok(view.retired.fd_bash_1795591267336)
+  assert.ok(view.active.bash)
+})
+
+test('unknown tool 记在身份上，不写进分数', () => {
+  const state = freshState()
+  ingestCall(state, { tool: 'plugin_check_1', ok: false, output: 'unknown tool plugin_check_1', outputChars: 20, elapsedMs: 1, args: {} })
+  ingestCall(state, { tool: 'plugin_check_1', ok: false, output: 'UNKNOWN_TOOL', outputChars: 12, elapsedMs: 1, args: {} })
+  assert.equal(state.identity.plugin_check_1.unmet, 2)
+  assert.equal(state.tools.plugin_check_1.score ?? 0, 0)
+  assert.equal(state.tools.plugin_check_1.gated ?? false, false)
 })

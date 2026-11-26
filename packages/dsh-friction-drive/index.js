@@ -3,7 +3,7 @@
  * 工具定义由插件写入当前会话的目录，预计调用次数按登记公式计算。
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,10 +12,11 @@ import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, canonicalPatc
 import { fillTemplate, optionalSlots, presentDelegated, shellQuote, unknownArguments } from './owned-runtime.js'
 import { assessCritique, assessLoopOffer, assessPlan, qualityCopy, qualityView } from './quality.js'
 import { schemaError } from './schema.js'
+import { closeSession, partitionTools, pauseGates } from './score.js'
 import { readSession, readShared, sessionDir, stateRoot, withSession, withShared } from './store.js'
 
 const ROOT = stateRoot
-const OWN = new Set(['friction_status', 'propose_tool_goal', 'apply_tool_change', 'restore_tool_definition', 'propose_compiled_procedure', 'propose_quality_loop', 'record_quality_critique', 'record_quality_plan'])
+const OWN = new Set(['friction_status', 'friction_pause', 'propose_tool_goal', 'apply_tool_change', 'restore_tool_definition', 'propose_compiled_procedure', 'propose_quality_loop', 'record_quality_critique', 'record_quality_plan'])
 
 export const name = 'friction-drive'
 export const inject = ['tools']
@@ -78,9 +79,12 @@ export function apply(ctx) {
       try {
         const { state, catalog } = readSession(ROOT(), sessionId, this.threshold)
         const row = state.tools?.[tool]
-        const successor = row?.successor ?? ''
+        const successorName = row?.successor ?? ''
+        const successorBroken = Boolean(state.identity?.[successorName]?.broken)
+        const successor = successorBroken ? '' : successorName
         return {
-          gated: Boolean(row?.gated),
+          gated: Boolean(row?.gated) && !state.pause,
+          paused: Boolean(state.pause),
           successor,
           owned: Boolean(row?.owned),
           // 已有摩擦后继时，编译拦截让路。
@@ -89,6 +93,18 @@ export function apply(ctx) {
       } catch {
         return { gated: false, successor: '', owned: false, intercepts: [] }
       }
+    },
+    /** 这一次拦住之后，下一次调用重新记账，不再一直禁用。 */
+    consumeHold(sessionId, tool) {
+      if (!sessionId) return false
+      return withSession(ROOT(), sessionId, this.threshold, ({ state }) => {
+        const row = state.tools?.[tool]
+        if (!row) return false
+        row.gated = false
+        row.hold = false
+        row.skipNext = true
+        return true
+      })
     },
   }
   ctx.reflect.provide('friction', drive)
@@ -110,10 +126,24 @@ export function apply(ctx) {
       }
       return JSON.stringify(withSession(ROOT(), sessionId, drive.threshold, ({ state, catalog }) => {
         importPersisted(state, catalog, readShared(ROOT()).owned)
+        const live = new Set([
+          ...drive.registry.keys(),
+          ...Object.keys(catalog.owned ?? {}),
+          ...Object.keys(catalog.compiled ?? {}),
+        ])
+        const parts = partitionTools(state, live)
+        const extra = (state.notes ?? []).join('\n')
         return {
         ok: true,
         threshold: state.threshold,
-        tools: state.tools,
+        tools: parts.active,
+        active: parts.active,
+        retired: parts.retired,
+        unmet: parts.unmet,
+        repetition: state.repetition ?? {},
+        pause: state.pause ?? null,
+        card: state.card ?? null,
+        summary: state.summary ?? null,
         proposals: state.proposals,
         definitions: [...drive.registry.values()].map((entry) => ({
           name: entry.name,
@@ -135,7 +165,7 @@ export function apply(ctx) {
           spec?.voluntary ? 'voluntary' : 'friction',
         ])),
         persisted: Object.keys(readShared(ROOT()).owned ?? {}),
-        notes: renderNotes(catalog.owned ?? {}),
+        notes: [renderNotes(catalog.owned ?? {}), extra].filter(Boolean).join('\n'),
         compilable: compilableView(matureFragments(state.trace ?? [], fragmentGuards(state))),
         quality: qualityView(catalog.quality),
         compiled: Object.values(catalog.compiled ?? {}).map((spec) => ({
@@ -150,6 +180,24 @@ export function apply(ctx) {
         })),
         }
       }))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'friction_pause',
+    description: '暂停本会话的摩擦闸门。只有用户点了允许才生效，代理不能自己关掉。会话结束自动恢复。',
+    parameters: {},
+    output: textOutput(),
+    async execute(args, exec) {
+      const sessionId = drive.sessionOf(exec)
+      if (!sessionId) return JSON.stringify({ ok: false, code: 'SESSION_REQUIRED' })
+      const outcome = await askApproval(ctx, exec, 'friction_pause', '暂停本会话的摩擦闸门。计数继续记，会话结束自动恢复。', {
+        zh: '暂停本会话的摩擦闸门。计数继续记，会话结束自动恢复。',
+        en: 'Pause friction gates for this session. Counting continues. They resume when the session ends.',
+      })
+      if (outcome !== 'allowed-once') return JSON.stringify({ ok: false, code: 'NOT_APPROVED', outcome })
+      const saved = withSession(ROOT(), sessionId, drive.threshold, ({ state }) => pauseGates(state, new Date().toISOString(), 'user'))
+      return JSON.stringify({ ok: true, ...saved })
     },
   }))
 
@@ -564,6 +612,9 @@ function watchTools(ctx, drive) {
   })
   ctx.on('agent/disposed', ({ agent }) => {
     const sessionId = drive.sessionOf({ agent })
+    if (sessionId && existsSync(sessionDir(ROOT(), sessionId))) {
+      try { withSession(ROOT(), sessionId, drive.threshold, ({ state }) => closeSession(state)) } catch { /* 摘要写失败不影响卸载 */ }
+    }
     drive.agents.delete(agent)
     for (const [key, bound] of drive.ownedBindings) {
       if (!key.startsWith(`${sessionId}:`)) continue
@@ -590,17 +641,16 @@ function watchTools(ctx, drive) {
     } catch {
       return decision
     }
+    if (gate.paused) return decision
+    if (gate.gated) {
+      try { drive.consumeHold(drive.sessionOf(exec), exec.name) } catch { /* 放不下这次跳过时，仍只拒绝这一次 */ }
+      return {
+        kind: 'deny',
+        reason: `${exec.name} 近几次失败已到拦截线。这一次先停下来。可以沉淀替代、继续这一次之后的调用，或让用户暂停本会话闸门。请查看 friction_status。`,
+      }
+    }
     if (gate.successor) {
       return { kind: 'deny', reason: `${exec.name} 在这个会话里请改用 ${gate.successor}，并查看 friction_status 的 notes。原工具定义没有修改。` }
-    }
-    if (gate.owned && gate.gated) {
-      return { kind: 'deny', reason: `${exec.name} 属于本插件，摩擦已过线。请提出一份不同的修改，同时更新 schema、执行方式和技能说明。` }
-    }
-    if (gate.gated) {
-      const hint = drive.registry.has(exec.name)
-        ? '请调用 propose_tool_goal，再调用 apply_tool_change。审批卡由插件填写数字。'
-        : `请调用 propose_tool_goal。patch_json 的 schema 写成 {"dir":{"type":"string","required":true,"description":"目录"}}，run 写成 {"kind":"script","command":"命令"} 或直接写命令字符串。usage 最多 200 字。不要修改 ${exec.name} 本身。`
-      return { kind: 'deny', reason: `${exec.name} 的摩擦已过线。${hint}` }
     }
     const intercepted = (gate.intercepts ?? []).find((item) => interceptMatches(item, exec.name, exec.arguments))
     if (intercepted) {
@@ -623,7 +673,7 @@ function watchTools(ctx, drive) {
     const text = (result?.content ?? []).map((block) => block?.text ?? '').join('\n')
     const exitCode = typeof result?.value?.exitCode === 'number' ? result.value.exitCode : undefined
     try {
-      drive.observe(drive.sessionOf(exec), {
+      const observed = drive.observe(drive.sessionOf(exec), {
         tool: exec.name,
         callId: exec.callId,
         ok: judged.ok,
@@ -641,6 +691,9 @@ function watchTools(ctx, drive) {
         parallel,
         fileHash: result?.value?.fileHash ?? null,
       })
+      if (observed?.hint && Array.isArray(result?.content)) {
+        result.content.push({ type: 'text', text: observed.hint })
+      }
     } catch {
       // 记账失败时保留工具原来的结果。
     }

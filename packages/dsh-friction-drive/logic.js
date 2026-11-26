@@ -3,10 +3,12 @@
  * 预计调用次数由插件按登记时的公式计算，不采用工具临时返回的数字。
  */
 
+import { armCard, currentScore, ensureIdentity, ensureLedgers, failureSignature, noteRepetition, repetitionSuggestion, rollbackReplacement, SIGNATURE_REPEAT } from './score.js'
+
 export const PATCH_KEYS = ['pageSize', 'warmupError', 'format', 'engine', 'minIntervalMs', 'delayMs']
 
 export function freshState(threshold = 8) {
-  return { threshold, tools: {}, proposals: {} }
+  return ensureLedgers({ threshold, tools: {}, proposals: {} })
 }
 
 export function freshTool() {
@@ -22,6 +24,8 @@ export function freshTool() {
     lastOutputChars: 0,
     workloadItems: null,
     unmet: 0,
+    events: [],
+    hold: false,
   }
 }
 
@@ -45,7 +49,7 @@ export function scoreCall(tool, event, options = {}) {
   if ((event.elapsedMs ?? 0) > slowMs) reasons.push('slow')
   if (event.truncated) reasons.push('partial')
   if ((event.outputChars ?? 0) > verboseChars && (event.ok === false || retry)) reasons.push('verbose')
-  const weights = { failure: 3, retry: 2, slow: 1, partial: 2, verbose: 1 }
+  const weights = { failure: 1, retry: 0.5, partial: 0.3, slow: 0.2, verbose: 0.2 }
   const points = reasons.reduce((sum, reason) => sum + weights[reason], 0)
   return { points, reasons, retry }
 }
@@ -68,32 +72,90 @@ export function scrubUnknownToolGate(state, name) {
   const realFailure = rows.some((row) => row.failed && !isUnregisteredCall(row.output))
   if (realFailure) return false
   tool.gated = false
+  tool.hold = false
   tool.score = 0
+  tool.events = []
   tool.failures = 0
   tool.calls = Math.max(0, (tool.calls ?? 0) - unknown.length)
-  tool.unmet = Math.max(tool.unmet ?? 0, unknown.length)
+  const identity = ensureIdentity(state, name)
+  identity.unmet = Math.max(identity.unmet ?? 0, unknown.length, tool.unmet ?? 0)
+  tool.unmet = identity.unmet
   return true
 }
+
+/**
+ * 记一次调用。分数按衰减重算。
+ * 同一失败签名第三次，或分数到了拦线，只把下一次调用拦住。
+ * 用户取消和 unknown tool 不计分。
+ */
 export function noteCall(state, event, options = {}) {
-  const tool = state.tools[event.tool] ?? freshTool()
-  if (tool.gated) {
-    state.tools[event.tool] = tool
-    return { state, blocked: true, gate: false, points: 0, tool }
+  ensureLedgers(state)
+  const name = event.tool
+  const tool = state.tools[name] ?? freshTool()
+  tool.events = tool.events ?? []
+  state.tools[name] = tool
+  if (event.cancelled) {
+    state.notes.push('用户取消')
+    return { state, blocked: false, gate: false, points: 0, reasons: [], tool, level: 'none' }
   }
+  if (tool.skipNext || tool.gated) {
+    tool.skipNext = false
+    tool.gated = false
+    tool.hold = false
+    return { state, blocked: true, gate: false, points: 0, reasons: [], tool, level: 'L1' }
+  }
+  const rolled = rollbackReplacement(state, event)
+  if (rolled) {
+    return { state, blocked: false, gate: false, points: 0, reasons: [], tool, broken: true, restored: rolled.restored, level: 'none' }
+  }
+  if (Number.isInteger(event.round)) state.round = Math.max(state.round, event.round)
+  const at = Number.isFinite(event.at) ? event.at : Date.now()
   const scored = scoreCall(tool, event, options)
   tool.calls += 1
   if (event.ok === false) tool.failures += 1
   if (scored.retry) tool.retries += 1
   if (event.truncated) tool.partials += 1
-  tool.score += scored.points
+  const signature = failureSignature(name, event)
+  if (scored.points > 0) {
+    tool.events.push({ weight: scored.points, round: state.round, at, signature })
+  }
+  if (event.ok !== false) noteRepetition(state, name, event.args, at)
   tool.lastArgs = event.args ?? ''
   tool.lastOk = event.ok === false ? false : true
   tool.lastOutputChars = event.outputChars ?? 0
   if (Number.isInteger(event.workloadItems) && event.workloadItems >= 1) tool.workloadItems = event.workloadItems
-  const crossed = tool.score >= state.threshold && scored.points > 0
-  if (crossed) tool.gated = true
-  state.tools[event.tool] = tool
-  return { state, blocked: false, gate: crossed, points: scored.points, reasons: scored.reasons, tool }
+  tool.score = currentScore(state, name, at)
+  const repeats = signatureCountOf(state, name, signature, at)
+  let level = 'none'
+  let hint = ''
+  if (!state.pause && scored.points > 0 && (repeats >= SIGNATURE_REPEAT || tool.score >= state.blockScore)) {
+    level = 'L1'
+    tool.gated = true
+    tool.hold = true
+    armCard(state, name, tool.score)
+  } else if (scored.points > 0 && tool.score >= state.hintScore) {
+    level = 'L0'
+    hint = `此工具近 3 轮反复失败（score ${tool.score}），可考虑沉淀替代`
+  }
+  const suggestion = event.ok === false ? '' : repetitionSuggestion(state, name, event.args)
+  return {
+    state,
+    blocked: false,
+    gate: level === 'L1',
+    points: scored.points,
+    reasons: scored.reasons,
+    tool,
+    level,
+    hint,
+    suggestion,
+    signature,
+    card: state.card ?? null,
+  }
+}
+
+function signatureCountOf(state, name, signature, now) {
+  const tool = state.tools?.[name]
+  return (tool?.events ?? []).filter((item) => item.signature === signature && item.weight > 0 && (state.round - item.round) <= (state.halfLifeRounds * 2) && (now - item.at) <= (state.halfLifeMs * 2)).length
 }
 
 /** 工作量不能超过登记时的条目上限，也不能用 0 或小数把公式压低。 */
@@ -221,7 +283,10 @@ export function clearGate(state, toolName) {
   const tool = state.tools[toolName]
   if (!tool) return state
   tool.gated = false
+  tool.hold = false
+  tool.skipNext = false
   tool.score = 0
+  tool.events = []
   tool.calls = 0
   tool.failures = 0
   tool.retries = 0

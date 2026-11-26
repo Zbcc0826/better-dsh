@@ -4,6 +4,7 @@
  */
 import { randomBytes } from 'node:crypto'
 import { freshTool, isUnregisteredCall, noteCall, OWNED_NAME, commandFailed } from './logic.js'
+import { ensureIdentity } from './score.js'
 import { fillTemplate, shellQuote } from './owned-runtime.js'
 
 /**
@@ -1294,6 +1295,8 @@ export function ingestCall(state, event, options = {}) {
     const tool = state.tools[event.tool] ?? freshTool()
     tool.unmet = (tool.unmet ?? 0) + 1
     state.tools[event.tool] = tool
+    const identity = ensureIdentity(state, event.tool)
+    identity.unmet = tool.unmet
     return { record, skippedScore: true, unmet: tool.unmet, points: 0 }
   }
   const skipScore = event.bypass || event.invalid || event.own || event.compiled || event.parallel
@@ -1307,6 +1310,12 @@ export function ingestCall(state, event, options = {}) {
     elapsedMs: event.elapsedMs ?? 0,
     truncated: record.truncated,
     workloadItems: event.workloadItems,
+    output: event.output,
+    message: event.message,
+    errorCode: event.errorCode,
+    round: event.round,
+    at: event.at,
+    cancelled: event.cancelled === true,
   }, options)
   return { record, ...scored }
 }

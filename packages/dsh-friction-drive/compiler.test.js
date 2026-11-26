@@ -584,7 +584,7 @@ test('正文非零退出码记摩擦失败，随后的成功同参不加 retry',
   assert.equal(failed.record.failed, true)
   assert.equal(state.tools.bash.lastOk, false)
   assert.equal(state.tools.bash.failures, 1)
-  assert.equal(state.tools.bash.score, 3)
+  assert.equal(state.tools.bash.score, 1)
   const again = ingestCall(state, {
     tool: 'bash',
     args: { command: 'ls /tmp' },
@@ -595,7 +595,7 @@ test('正文非零退出码记摩擦失败，随后的成功同参不加 retry',
   })
   assert.equal(again.points, 0)
   assert.equal((again.reasons ?? []).includes('retry'), false)
-  assert.equal(state.tools.bash.score, 3)
+  assert.equal(state.tools.bash.score, 1)
   assert.equal(state.tools.bash.lastOk, true)
 })
 
@@ -764,7 +764,7 @@ test('插件会话：审批前不执行，拦截不误伤，另一会话看不�
   assert.equal(rejectedUnit.code, 'UNIT_REJECTED')
   status = JSON.parse(await ctx.tools.items.get('friction_status').execute({}, exec))
   assert.equal(status.tools.fx_convert.calls, 6)
-  assert.equal(status.tools.fx_convert.score, 3)
+  assert.equal(status.tools.fx_convert.score, 1)
 
   const steps = [
     ['bash', { command: 'ls /tmp' }, 'tmp'],
@@ -866,7 +866,7 @@ test('仓库外必须加载插件入口，依赖解析失败就是失败', () =>
   const dir = mkdtempSync(path.join(tmpdir(), 'ec-load-'))
   const packageDir = path.join(dir, 'pkg')
   mkdirSync(packageDir, { recursive: true })
-  for (const name of ['index.js', 'logic.js', 'compiler.js', 'quality.js', 'store.js', 'schema.js', 'owned-runtime.js']) {
+  for (const name of ['index.js', 'logic.js', 'score.js', 'compiler.js', 'quality.js', 'store.js', 'schema.js', 'owned-runtime.js']) {
     cpSync(path.join(here, name), path.join(packageDir, name))
   }
   const root = path.resolve(here, '../..')
