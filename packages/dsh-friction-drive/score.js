@@ -29,7 +29,39 @@ export function ensureLedgers(state) {
   state.halfLifeRounds = state.halfLifeRounds ?? HALF_LIFE_ROUNDS
   state.halfLifeMs = state.halfLifeMs ?? HALF_LIFE_MS
   state.cardsIssued = state.cardsIssued ?? 0
+  if (!state.mergingSignatures) {
+    state.mergingSignatures = true
+    try { mergeLegacySignatures(state) } finally { delete state.mergingSignatures }
+  }
   return state
+}
+
+/**
+ * 0.2.2 把成功调用签成「工具·ok·error」，许多不同的调用并成了一个假坑。
+ * 归并时抹掉这种签名。权重留下，真正的失败签名不动。
+ * 只因这个假坑过线、分数又没到拦线的，把闸打开。
+ */
+export function mergeLegacySignatures(state) {
+  if (!state?.tools) return state
+  for (const tool of Object.values(state.tools)) {
+    if (!tool || typeof tool !== 'object') continue
+    if (isCollapsedSignature(tool.lastSignature)) tool.lastSignature = ''
+    for (const event of tool.events ?? []) {
+      if (isCollapsedSignature(event.signature)) event.signature = ''
+    }
+    if (tool.gated && !gateStillDue(state, tool)) {
+      tool.gated = false
+      tool.hold = false
+      tool.continueOnce = false
+    }
+  }
+  scrubCollapsedCard(state)
+  return state
+}
+
+/** 成功调用被误签成的「工具·ok·error」。新的失败签名不会是这个形状。 */
+export function isCollapsedSignature(signature) {
+  return typeof signature === 'string' && /^[^·\s]+·ok·error$/.test(signature)
 }
 
 /** 工具身份。和分数不是同一个对象。 */
@@ -337,25 +369,68 @@ function eventSummary(events) {
   return (events ?? []).slice(-5).map((item) => ({
     round: item.round ?? 0,
     weight: item.weight ?? 0,
-    signature: item.signature ?? '',
+    signature: item.signature || null,
   }))
 }
 
-/** 卡面签名取最近一次真正的失败。权重不到 1 的旧记录（例如 ok·error）不盖住它。 */
+/** 卡面签名取最近一次真正的失败。误签的 ok·error 不算。 */
 function cardSignature(signature, events) {
-  const lastFailure = [...(events ?? [])].reverse().find((item) => item.signature && (item.weight ?? 0) >= 1)
-  return lastFailure?.signature || signature || null
+  const lastFailure = [...(events ?? [])].reverse().find((item) => item.signature && !isCollapsedSignature(item.signature) && (item.weight ?? 0) >= 1)
+  const fallback = isCollapsedSignature(signature) ? '' : signature
+  return lastFailure?.signature || fallback || null
 }
 
-/** 重复到线的签名都列出来。最近一次失败放在最前，方便和卡面签名对照。 */
+/** 重复到线的签名都列出来。最近一次失败放在最前，误签的 ok·error 不列入。 */
 function cardSignatures(headline, events) {
   const counts = new Map()
   for (const item of events ?? []) {
-    if (!item.signature || !(item.weight > 0)) continue
+    if (!item.signature || isCollapsedSignature(item.signature) || !(item.weight > 0)) continue
     counts.set(item.signature, (counts.get(item.signature) ?? 0) + 1)
   }
   const repeated = [...counts].filter(([, count]) => count >= SIGNATURE_REPEAT).map(([key]) => key)
-  return [...new Set([headline, ...repeated].filter(Boolean))]
+  const shown = isCollapsedSignature(headline) ? '' : headline
+  return [...new Set([shown, ...repeated].filter(Boolean))]
+}
+
+/** 抹掉卡片上残留的 ok·error。已经没有工具过线时，把这张卡收掉。 */
+function scrubCollapsedCard(state) {
+  const card = state.card
+  if (!card) return
+  if (!Object.values(state.tools ?? {}).some((tool) => tool?.gated)) {
+    state.card = null
+    return
+  }
+  stripCollapsedEntry(card)
+  for (const entry of card.tools ?? []) stripCollapsedEntry(entry)
+}
+
+function stripCollapsedEntry(entry) {
+  if (!entry) return
+  for (const event of entry.events ?? []) {
+    if (isCollapsedSignature(event.signature)) event.signature = ''
+  }
+  if (Array.isArray(entry.signatures)) entry.signatures = entry.signatures.filter((item) => !isCollapsedSignature(item))
+  if (isCollapsedSignature(entry.signature)) entry.signature = entry.signatures?.[0] || null
+}
+
+/** 假签名清掉之后，是否仍该关着闸。用这些事件自己的时间，不拿现在去作废旧账。 */
+function gateStillDue(state, tool) {
+  const events = tool.events ?? []
+  const now = events.reduce((latest, event) => Math.max(latest, event.at ?? 0), 0) || Date.now()
+  const counts = new Map()
+  for (const event of events) {
+    if (!event.signature || !(event.weight > 0)) continue
+    if ((state.round ?? 0) - (event.round ?? 0) > (state.halfLifeRounds ?? HALF_LIFE_ROUNDS) * 2) continue
+    if (now - (event.at ?? now) > (state.halfLifeMs ?? HALF_LIFE_MS) * 2) continue
+    counts.set(event.signature, (counts.get(event.signature) ?? 0) + 1)
+  }
+  for (const count of counts.values()) {
+    if (count >= SIGNATURE_REPEAT) return true
+  }
+  if (events.length === 0) return (tool.score ?? 0) >= (state.blockScore ?? BLOCK_SCORE)
+  let sum = 0
+  for (const event of events) sum += decayedWeight(event, state, now)
+  return sum >= (state.blockScore ?? BLOCK_SCORE)
 }
 
 function round2(value) {

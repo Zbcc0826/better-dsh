@@ -6,6 +6,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, w
 import os from 'node:os'
 import path from 'node:path'
 import { freshState } from './logic.js'
+import { mergeLegacySignatures } from './score.js'
 
 /** 跟随 DSH_HOME，空白环境变量视为没设置。 */
 export function harnessHome() {
@@ -104,8 +105,10 @@ function writeJson(file, value) {
 /** 只读会话。文件不存在时不创建目录。 */
 export function readSession(root, sessionId, threshold) {
   const dir = sessionDir(root, sessionId)
+  const state = readJson(path.join(dir, 'state.json'), freshState(threshold))
+  mergeLegacySignatures(state)
   return {
-    state: readJson(path.join(dir, 'state.json'), freshState(threshold)),
+    state,
     catalog: readJson(path.join(dir, 'catalog.json'), { tools: {} }),
   }
 }
@@ -118,6 +121,7 @@ export function withSession(root, sessionId, threshold, mutate) {
   const dir = sessionDir(root, sessionId)
   return withLock(dir, () => {
     const state = readJson(path.join(dir, 'state.json'), freshState(threshold))
+    mergeLegacySignatures(state)
     const catalog = readJson(path.join(dir, 'catalog.json'), { tools: {} })
     const result = mutate({ state, catalog })
     writeJson(path.join(dir, 'state.json'), state)

@@ -3,7 +3,7 @@
  * 预计调用次数由插件按登记时的公式计算，不采用工具临时返回的数字。
  */
 
-import { armCard, currentScore, ensureIdentity, ensureLedgers, failureSignature, noteRepetition, parseToolError, repetitionSuggestion, rollbackReplacement, SIGNATURE_REPEAT } from './score.js'
+import { armCard, currentScore, ensureIdentity, ensureLedgers, failureSignature, isCollapsedSignature, noteRepetition, parseToolError, repetitionSuggestion, rollbackReplacement, SIGNATURE_REPEAT } from './score.js'
 
 export const PATCH_KEYS = ['pageSize', 'warmupError', 'format', 'engine', 'minIntervalMs', 'delayMs']
 
@@ -175,15 +175,15 @@ export function noteCall(state, event, options = {}) {
 
 function signatureCountOf(state, name, signature, now) {
   const tool = state.tools?.[name]
-  if (!signature) return 0
-  return (tool?.events ?? []).filter((item) => item.signature && item.signature === signature && item.weight > 0 && (state.round - item.round) <= (state.halfLifeRounds * 2) && (now - item.at) <= (state.halfLifeMs * 2)).length
+  if (!signature || isCollapsedSignature(signature)) return 0
+  return (tool?.events ?? []).filter((item) => item.signature && !isCollapsedSignature(item.signature) && item.signature === signature && item.weight > 0 && (state.round - item.round) <= (state.halfLifeRounds * 2) && (now - item.at) <= (state.halfLifeMs * 2)).length
 }
 
 /** 窗口里出现最多的失败签名。成功的这一次不算，但旧失败还在就要重新拦。 */
 function hottestSignature(state, name, now) {
   const counts = new Map()
   for (const item of state.tools?.[name]?.events ?? []) {
-    if (!item.signature || !(item.weight > 0)) continue
+    if (!item.signature || isCollapsedSignature(item.signature) || !(item.weight > 0)) continue
     if ((state.round - item.round) > state.halfLifeRounds * 2) continue
     if ((now - item.at) > state.halfLifeMs * 2) continue
     counts.set(item.signature, (counts.get(item.signature) ?? 0) + 1)

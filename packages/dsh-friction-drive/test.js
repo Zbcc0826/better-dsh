@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { admit, applyAdaptation, approvalCopy, belowThresholdCopy, clearGate, failureOf, freshState, freshTool, gateSkipped, importPersisted, installOwnedRecord, noteCall, normalizeOwnedPatch, notesDescription, ownedCopy, ownedName, ownedPatchExample, ownedPatchHint, patchesMatch, persistedRecord, projectedCalls, propose, proposeOwned, renderNotes, retest, reviseOwned, sameOwned, scrubUnknownToolGate, semanticOwnedName, truncationOf } from './logic.js'
+import { mergeLegacySignatures } from './score.js'
 import { fillTemplate, optionalSlots, unknownArguments } from './owned-runtime.js'
 import { ingestCall } from './compiler.js'
 import { schemaError } from './schema.js'
@@ -105,12 +106,23 @@ test('工具正文里的不同错误各有签名，慢的成功调用不签名�
   assert.equal(slow.tools.wiki_ingest.gated, false)
 })
 
-test('卡片签名取最近一次真正失败，不沿用更早的 ok·error', () => {
+test('历史 ok·error 归并后不再占一个坑，真正的失败还在', () => {
   const state = freshState()
   const tool = freshTool()
   const at = Date.now()
   tool.events = [0, 1, 2].map(() => ({ weight: 0.2, round: 1, at, signature: 'wiki_ingest·ok·error' }))
+  tool.lastSignature = 'wiki_ingest·ok·error'
+  tool.gated = true
   state.tools.wiki_ingest = tool
+  state.card = {
+    round: 1,
+    tool: 'wiki_ingest',
+    signature: 'wiki_ingest·ok·error',
+    signatures: ['wiki_ingest·BAD_PATCH·BAD_PATCH:claims', 'wiki_ingest·ok·error'],
+    events: [{ round: 1, weight: 0.2, signature: 'wiki_ingest·ok·error' }],
+    actions: [{ id: 'pause', label: '本会话暂停' }],
+    tools: [],
+  }
   const call = noteCall(state, {
     tool: 'wiki_ingest',
     ok: true,
@@ -119,11 +131,36 @@ test('卡片签名取最近一次真正失败，不沿用更早的 ok·error', (
     round: 1,
     at,
   })
-  assert.equal(call.gate, true)
-  assert.equal(state.card.signature, 'wiki_ingest·BAD_PATCH·BAD_PATCH:claims')
-  assert.equal(state.card.signatures[0], 'wiki_ingest·BAD_PATCH·BAD_PATCH:claims')
-  assert.equal(state.card.signatures.includes('wiki_ingest·ok·error'), true)
-  assert.equal(state.tools.wiki_ingest.events.some((item) => item.signature === 'wiki_ingest·ok·error'), true)
+  assert.equal(call.gate, false)
+  assert.equal(state.card, null)
+  assert.equal(state.tools.wiki_ingest.gated, false)
+  assert.equal(state.tools.wiki_ingest.events.filter((item) => item.signature === 'wiki_ingest·ok·error').length, 0)
+  assert.equal(state.tools.wiki_ingest.events.filter((item) => item.weight === 0.2).length, 3)
+  assert.equal(state.tools.wiki_ingest.events.at(-1).signature, 'wiki_ingest·BAD_PATCH·BAD_PATCH:claims')
+  const kept = freshState()
+  const real = freshTool()
+  real.events = [
+    ...[0, 1, 2].map(() => ({ weight: 1, round: 1, at, signature: 'wiki_ingest·BAD_PATCH·BAD_PATCH:claims' })),
+    { weight: 0.2, round: 1, at, signature: 'wiki_ingest·ok·error' },
+  ]
+  real.gated = true
+  real.score = 3
+  kept.tools.wiki_ingest = real
+  kept.card = {
+    signature: 'wiki_ingest·BAD_PATCH·BAD_PATCH:claims',
+    signatures: ['wiki_ingest·BAD_PATCH·BAD_PATCH:claims', 'wiki_ingest·ok·error'],
+    events: [
+      { round: 1, weight: 1, signature: 'wiki_ingest·BAD_PATCH·BAD_PATCH:claims' },
+      { round: 1, weight: 0.2, signature: 'wiki_ingest·ok·error' },
+    ],
+    tools: [{ signature: 'wiki_ingest·ok·error', signatures: ['wiki_ingest·ok·error'], events: [] }],
+  }
+  mergeLegacySignatures(kept)
+  assert.equal(kept.tools.wiki_ingest.gated, true)
+  assert.equal(kept.card.signature, 'wiki_ingest·BAD_PATCH·BAD_PATCH:claims')
+  assert.deepEqual(kept.card.signatures, ['wiki_ingest·BAD_PATCH·BAD_PATCH:claims'])
+  assert.equal(kept.card.events.some((item) => item.signature === 'wiki_ingest·ok·error'), false)
+  assert.equal(kept.tools.wiki_ingest.events.filter((item) => item.weight === 0.2).length, 1)
 })
 
 test('预计次数按本会话工作量计算，非法页码和不能下降的补丁会被拒绝', () => {
